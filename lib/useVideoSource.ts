@@ -133,7 +133,20 @@ export function useVideoSource(videoRef: RefObject<HTMLVideoElement | null>) {
     [release, videoRef],
   );
 
-  useEffect(() => release, [release]);
+  // Releases the source when the page goes away. During development the same effect also runs again
+  // when the code reloads, with `source` kept but the stream released by the cleanup, which would leave
+  // a camera that says it is connected and shows nothing. So on the way back in, a camera is started
+  // again, and a source that needs a click (a shared screen, a file) is forgotten.
+  const latest = useRef({ source, release, connectCamera });
+  latest.current = { source, release, connectCamera };
+  useEffect(() => {
+    const { source: kept, connectCamera: reconnect } = latest.current;
+    if (kept && !streamRef.current && !fileUrlRef.current) {
+      if (kept.kind === "camera") void reconnect(kept.deviceId);
+      else setSource(null);
+    }
+    return () => latest.current.release();
+  }, []);
 
   // Phones cannot share their screen. Checked after mount so server and client render the same first page.
   const [canShareScreen, setCanShareScreen] = useState(true);

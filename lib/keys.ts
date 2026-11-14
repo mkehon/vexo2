@@ -14,11 +14,25 @@ const ENV_NAME: Record<KeyName, string> = {
   openai: "OPENAI_API_KEY",
   anthropic: "ANTHROPIC_API_KEY",
   gemini: "GEMINI_API_KEY",
+  elevenlabs: "ELEVENLABS_API_KEY",
+  twilioSid: "TWILIO_ACCOUNT_SID",
+  twilioToken: "TWILIO_AUTH_TOKEN",
 };
 
 const FILE = path.join(process.cwd(), ".vexo", "keys.json");
 
-type Saved = Partial<Record<KeyName, string>> & { provider?: Provider };
+/** How calls and texts are placed. None of it is secret. */
+export type ReachConfig = {
+  /** The ElevenLabs id of the number calls come from, and the number itself, which texts come from. */
+  numberId?: string;
+  number?: string;
+  /** The ElevenLabs voice agent that speaks on calls. Created the first time it is needed. */
+  agentId?: string;
+  /** Numbers that have been reached from this computer. Other devices may reach only these. */
+  allowed?: string[];
+};
+
+type Saved = Partial<Record<KeyName, string>> & { provider?: Provider; reach?: ReachConfig };
 
 function readSaved(): Saved {
   try {
@@ -64,4 +78,20 @@ export function getProvider(): Provider {
 
 export function saveProvider(provider: Provider): void {
   writeSaved({ ...readSaved(), provider });
+}
+
+/** How calls and texts are placed: what was chosen in Settings, else what the environment sets. */
+export function getReach(): ReachConfig {
+  const saved = readSaved().reach ?? {};
+  return {
+    ...saved,
+    numberId: saved.numberId || process.env.ELEVENLABS_PHONE_NUMBER_ID || undefined,
+    number: saved.number || process.env.TWILIO_FROM_NUMBER || undefined,
+    agentId: saved.agentId || process.env.ELEVENLABS_AGENT_ID || undefined,
+  };
+}
+
+export function saveReach(change: ReachConfig): void {
+  const saved = readSaved();
+  writeSaved({ ...saved, reach: { ...saved.reach, ...change } });
 }

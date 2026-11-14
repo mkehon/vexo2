@@ -80,6 +80,16 @@ function thumbnailOf(canvas: HTMLCanvasElement): string {
   return small.toDataURL("image/jpeg", 0.6);
 }
 
+/** A small still of what the video shows right now, or "" when it has no picture yet. */
+export function snapshot(video: HTMLVideoElement | null): string {
+  if (!video || video.readyState < 2 || !video.videoWidth) return "";
+  const canvas = document.createElement("canvas");
+  canvas.width = THUMBNAIL_WIDTH;
+  canvas.height = Math.round((video.videoHeight / video.videoWidth) * THUMBNAIL_WIDTH);
+  canvas.getContext("2d")?.drawImage(video, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.6);
+}
+
 /** The current video frame as a coarse grid of brightness values. */
 function brightnessGrid(video: HTMLVideoElement, canvas: HTMLCanvasElement): Uint8Array | null {
   const context = canvas.getContext("2d", { willReadFrequently: true });

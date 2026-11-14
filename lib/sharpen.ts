@@ -5,11 +5,12 @@ import OpenAI from "openai";
 import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
 import { PROVIDERS } from "./providers";
-import type { Provider } from "./types";
+import { SENSOR_ORDER, SENSORS } from "./sensors";
+import type { Provider, SensorKind } from "./types";
 
 /**
  * Sharpening turns the sentence a user typed after "IF" into a yes/no question the
- * detector can answer from a single frame. Any of three providers can do it.
+ * detector can answer from a single frame or sensor reading. Any of three providers can do it.
  */
 
 const Sharpened = z.object({
@@ -20,7 +21,7 @@ const Sharpened = z.object({
 });
 export type Sharpened = z.infer<typeof Sharpened>;
 
-const SYSTEM = `You turn a person's description of something a camera should watch for into one yes/no question that a vision model answers from a single still image.
+const CAMERA_SYSTEM = `You turn a person's description of something a camera should watch for into one yes/no question that a vision model answers from a single still image.
 
 The vision model sees one frame at a time and has no memory of earlier frames. So:
 - If the description is an event or action (picks up, enters, opens, falls, leaves), ask about the visible state that holds right after it happens. "Someone picks up the mug" becomes "Is a person holding a mug in their hand?"
@@ -34,54 +35,142 @@ Return:
 - no: one sentence describing the situations that should count as no, especially near-misses that look similar.
 - say: a short sentence, under ten words, to announce out loud when this triggers.`;
 
-const sharpeners: Record<Provider, (when: string, apiKey: string) => Promise<Sharpened>> = {
-  async openai(when, apiKey) {
+/** Instructions for a sensor that sends readings: the model has to know which fields a reading has. */
+function readingSystem(sensor: SensorKind): string {
+  const { source, fields } = SENSORS[sensor];
+  return `You turn a person's description of something a sensor should watch for into one yes/no question that a model answers from a single reading.
+
+The sensor is ${source}. The model sees one reading at a time, as JSON with these fields:
+${fields}
+
+So:
+- Ask a question that can be answered from those fields alone. Name each quantity the way its field does and use the field's units. If the person uses other units, convert the number yourself: "five minutes" becomes 300 seconds.
+- If the description is an event (arrives, leaves, spikes, is dropped), ask about the state that holds right after it happens.
+- Phrase it so that yes means the trigger condition holds. Avoid negatives in the question.
+- Ask about one condition only. Keep the person's meaning and do not add requirements they did not state.
+
+Return:
+- question: the yes/no question.
+- yes: one sentence describing a reading for which the answer is yes.
+- no: one sentence describing the readings that should count as no, especially near-misses.
+- say: a short sentence, under ten words, to announce out loud when this triggers.`;
+}
+
+function systemFor(sensor: SensorKind): string {
+  return sensor === "camera" ? CAMERA_SYSTEM : readingSystem(sensor);
+}
+
+/** Asks the chosen provider for an answer in the shape of `schema`. */
+async function generate<Schema extends z.ZodType>(
+  provider: Provider,
+  apiKey: string,
+  system: string,
+  input: string,
+  schema: Schema,
+): Promise<z.infer<Schema>> {
+  const { label, model } = PROVIDERS[provider];
+
+  if (provider === "openai") {
     const response = await new OpenAI({ apiKey }).responses.parse({
-      model: PROVIDERS.openai.model,
+      model,
       // The task is a short rewrite, so skip the model's reasoning step for a faster reply.
       reasoning: { effort: "none" },
-      instructions: SYSTEM,
-      input: when,
-      text: { format: zodTextFormat(Sharpened, "rule") },
+      instructions: system,
+      input,
+      text: { format: zodTextFormat(schema, "answer") },
     });
-    if (!response.output_parsed) throw new Error("OpenAI did not return a question.");
-    return response.output_parsed;
-  },
+    if (!response.output_parsed) throw new Error(`${label} did not return an answer.`);
+    // The SDK's inferred type and Zod's are the same shape under different names.
+    return response.output_parsed as z.infer<Schema>;
+  }
 
-  async anthropic(when, apiKey) {
+  if (provider === "anthropic") {
     const response = await new Anthropic({ apiKey }).beta.messages.parse({
-      model: PROVIDERS.anthropic.model,
+      model,
       max_tokens: 16000,
       // If a safety classifier declines the request, the API retries it on a fallback model.
       betas: ["server-side-fallback-2026-07-01"],
       fallbacks: "default",
-      system: SYSTEM,
-      messages: [{ role: "user", content: when }],
-      output_config: { effort: "low", format: betaZodOutputFormat(Sharpened) },
+      system,
+      messages: [{ role: "user", content: input }],
+      output_config: { effort: "low", format: betaZodOutputFormat(schema) },
     });
     if (response.stop_reason === "refusal" || !response.parsed_output) {
-      throw new Error("Claude did not return a question.");
+      throw new Error(`${label} did not return an answer.`);
     }
     return response.parsed_output;
-  },
+  }
 
-  async gemini(when, apiKey) {
-    const response = await new GoogleGenAI({ apiKey }).models.generateContent({
-      model: PROVIDERS.gemini.model,
-      contents: when,
-      config: {
-        systemInstruction: SYSTEM,
-        responseMimeType: "application/json",
-        responseJsonSchema: z.toJSONSchema(Sharpened),
-      },
-    });
-    if (!response.text) throw new Error("Gemini did not return a question.");
-    return Sharpened.parse(JSON.parse(response.text));
-  },
-};
+  const response = await new GoogleGenAI({ apiKey }).models.generateContent({
+    model,
+    contents: input,
+    config: {
+      systemInstruction: system,
+      responseMimeType: "application/json",
+      responseJsonSchema: z.toJSONSchema(schema),
+    },
+  });
+  if (!response.text) throw new Error(`${label} did not return an answer.`);
+  return schema.parse(JSON.parse(response.text));
+}
 
-export function sharpen(provider: Provider, when: string, apiKey: string): Promise<Sharpened> {
-  return sharpeners[provider](when, apiKey);
+export function sharpen(provider: Provider, sensor: SensorKind, when: string, apiKey: string): Promise<Sharpened> {
+  return generate(provider, apiKey, systemFor(sensor), when, Sharpened);
+}
+
+const Composed = z.object({
+  sensor: z.enum(SENSOR_ORDER as [SensorKind, ...SensorKind[]]),
+  trigger: z.string(),
+  question: z.string(),
+  yes: z.string(),
+  no: z.string(),
+  action: z.enum(["call", "text"]),
+  message: z.string(),
+  destination: z.string(),
+  url: z.string(),
+});
+export type Composed = z.infer<typeof Composed>;
+
+const COMPOSE_SYSTEM = `You set up automations for a product that watches sensors and runs an action when something happens. A person describes one automation in a sentence. Work out which sensor it is about, what to check, and what to do.
+
+The sensors:
+- camera: one still image at a time, with no memory of earlier frames.
+${SENSOR_ORDER.filter((kind) => kind !== "camera")
+  .map((kind) => `- ${kind}: ${SENSORS[kind].source}. Each reading is JSON with these fields:\n${SENSORS[kind].fields}`)
+  .join("\n")}
+
+Choose the sensor the sentence is about:
+- sound for anything said or heard: someone asks, says, shouts, calls out or mentions something, a word or phrase, a noise, how loud it is. Asking for help is something said, so it is sound, not a gesture for the camera.
+- heart for heart rate or pulse, glucose for blood sugar, location for where the device is or how far or fast it travels, motion for how the device itself moves: shaken, dropped, still, face down.
+- camera for what can be seen: people, objects, gestures, scenes. Use it only when the sentence is about something visible and none of the other sensors measures it.
+
+Write the check as one yes/no question that a model answers from a single frame (camera) or a single reading (any other sensor):
+- For the camera, ask about what is visible, in plain concrete terms. Do not ask about intent, sound or anything outside the frame.
+- For any other sensor, ask a question that can be answered from the fields above alone. Name each quantity the way its field does and use the field's units. If the person uses other units, convert the number yourself: "five minutes" becomes 300 seconds.
+- If the sentence describes an event (picks up, arrives, spikes, is dropped), ask about the state that holds right after it happens.
+- Phrase it so that yes means the trigger condition holds. Avoid negatives in the question.
+- Ask about one condition only. Keep the person's meaning and do not add requirements they did not state.
+
+Work out the action. There are two, and both reach the person's phone:
+- "call" when the person wants a phone call or wants to be told by voice: call me, phone me, ring me, tell me, say, announce. Also when they name no action at all.
+- "text" when they want something written: text me, send me a text, SMS me, message me, notify me, let me know. Also when they ask for it to be sent or posted somewhere else, such as Slack or email, which is not available yet.
+
+Return:
+- sensor: the sensor chosen.
+- trigger: the condition as a short phrase that reads naturally after the word "When". For the camera, describe what is seen, such as "someone raises their hand". For the others, begin with ${SENSOR_ORDER.filter((kind) => kind !== "camera")
+  .map((kind) => `"${SENSORS[kind].lead}" for ${kind}`)
+  .join(", ")}; for example "the heart rate goes above 120".
+- question: the yes/no question.
+- yes: one sentence describing a frame or reading for which the answer is yes.
+- no: one sentence describing what should count as no, especially near-misses.
+- action: "call" or "text".
+- message: the sentence to say on the call or send in the text, under fifteen words. Use the person's own words if they gave them; otherwise say what happened.
+- destination: always empty.
+- url: always empty.`;
+
+/** Turns one sentence into a whole automation: which sensor, what to check, and what to do. */
+export function compose(provider: Provider, sentence: string, apiKey: string): Promise<Composed> {
+  return generate(provider, apiKey, COMPOSE_SYSTEM, sentence, Composed);
 }
 
 /** Makes a free call that fails if the provider does not accept the key. */

@@ -3,38 +3,24 @@ import {
   PermissionDeniedError as TypeSafePermissionDeniedError,
   TypeSafeClient,
 } from "@typesafe-ai/sdk";
-import { getProvider, keyStatus, saveKey, saveProvider } from "@/lib/keys";
+import { getKey, getReach, saveKey, saveProvider, saveReach } from "@/lib/keys";
+import { isThisComputer, settingsFor } from "@/lib/local";
 import { isProvider, PROVIDERS } from "@/lib/providers";
+import { checkTwilio, defaultNumber, listNumbers, ReachError } from "@/lib/reach";
 import { checkProviderKey, isKeyRejection } from "@/lib/sharpen";
-import type { KeyName, Settings } from "@/lib/types";
+import type { KeyName } from "@/lib/types";
+
+const OTHER_KEYS = ["typesafe", "elevenlabs", "twilioSid", "twilioToken"] as const;
+
+function isKeyName(name: unknown): name is KeyName {
+  return isProvider(name) || OTHER_KEYS.includes(name as (typeof OTHER_KEYS)[number]);
+}
 
 function labelOf(name: KeyName): string {
-  return name === "typesafe" ? "TypeSafe" : PROVIDERS[name].label;
-}
-
-/**
- * Settings can be changed only from the computer running vexo. Requests from other devices
- * come through the https entrance, which marks them (see scripts/dev.mjs); the host check
- * covers a server that was started without it.
- */
-function isThisComputer(request: Request): boolean {
-  if (request.headers.has("x-vexo-remote")) return false;
-  const host = (request.headers.get("host") ?? "").replace(/:\d+$/, "");
-  return host === "localhost" || host === "127.0.0.1" || host === "[::1]";
-}
-
-function settingsFor(request: Request): Settings {
-  const canEdit = isThisComputer(request);
-  return {
-    canEdit,
-    provider: getProvider(),
-    keys: {
-      typesafe: keyStatus("typesafe", canEdit),
-      openai: keyStatus("openai", canEdit),
-      anthropic: keyStatus("anthropic", canEdit),
-      gemini: keyStatus("gemini", canEdit),
-    },
-  };
+  if (name === "typesafe") return "TypeSafe";
+  if (name === "elevenlabs") return "ElevenLabs";
+  if (name === "twilioSid" || name === "twilioToken") return "Twilio";
+  return PROVIDERS[name].label;
 }
 
 /** Asks the provider whether it accepts the key. Only a clear rejection blocks saving. */
@@ -43,6 +29,24 @@ async function checkKey(name: KeyName, value: string): Promise<{ rejected: boole
   try {
     if (name === "typesafe") {
       await new TypeSafeClient({ apiKey: value }).models.list({ timeout: 8000, retry: { maxRetries: 0 } });
+    } else if (name === "elevenlabs") {
+      // Listing the numbers both checks the key and gives a number to start with.
+      const numbers = await listNumbers(value);
+      const reach = getReach();
+      const start = numbers.find((item) => item.id === reach.numberId) ?? defaultNumber(numbers);
+      if (!start) return { rejected: false, message: "Saved. This ElevenLabs account has no Twilio number yet, and calls need one." };
+      saveReach({ numberId: start.id, number: start.number });
+      return { rejected: false, message: `Saved. Calls will come from ${start.number}.` };
+    } else if (name === "twilioSid" || name === "twilioToken") {
+      // The two only mean something together, so they are checked once both are here.
+      const sid = name === "twilioSid" ? value : getKey("twilioSid");
+      const token = name === "twilioToken" ? value : getKey("twilioToken");
+      if (name === "twilioSid" && !/^AC[0-9a-f]{32}$/i.test(value)) {
+        return { rejected: true, message: "An Account SID starts with AC and has 34 characters. Check it and try again." };
+      }
+      if (!sid || !token) return { rejected: false, message: `Saved. Add the ${sid ? "Auth Token" : "Account SID"} to finish.` };
+      await checkTwilio({ sid, token });
+      return { rejected: false, message: "Saved. Twilio accepted the Account SID and Auth Token." };
     } else {
       await checkProviderKey(name, value);
     }
@@ -51,9 +55,11 @@ async function checkKey(name: KeyName, value: string): Promise<{ rejected: boole
     const rejected =
       error instanceof TypeSafeAuthenticationError ||
       error instanceof TypeSafePermissionDeniedError ||
+      (error instanceof ReachError && error.rejected) ||
       isKeyRejection(error);
     if (rejected) {
-      return { rejected: true, message: `${label} rejected this key. Check it and try again.` };
+      const pair = name === "twilioSid" || name === "twilioToken";
+      return { rejected: true, message: `${label} rejected ${pair ? "this Account SID and Auth Token together" : "this key"}. Check it and try again.` };
     }
     const reason = error instanceof Error ? error.message : "unknown error";
     return { rejected: false, message: `Saved, but the key could not be checked (${reason}).` };
@@ -94,7 +100,7 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   const name = body?.name;
-  if (name !== "typesafe" && !isProvider(name)) {
+  if (!isKeyName(name)) {
     return Response.json({ error: "Unknown key." }, { status: 400 });
   }
 

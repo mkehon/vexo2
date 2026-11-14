@@ -1,4 +1,4 @@
-# Zapier for AI Wearables
+# Zapier for AI Wearable and Hardware
 
 Vision automations for wearables and hardware: when your device sees it, your apps do it. Connect a camera or any video feed, describe a trigger in a sentence, and choose the action that runs when it is seen.
 
@@ -33,6 +33,27 @@ Rules are stored per device, so the phone and the computer each keep their own l
 Rules are saved in the browser's local storage.
 
 Set `PORT` or `PHONE_PORT` to change the two ports.
+
+## Sensors
+
+Step 1 has a tab per sensor. Each one offers the real device and, where a real one is hard to come by, a simulator, so a trigger can be tried without hardware.
+
+| Sensor | Sources | What a rule can use |
+| --- | --- | --- |
+| Camera | Camera, shared screen or tab, video file | What is in the picture |
+| Sound | Any microphone | How loud it is, and the words said in the last 15 seconds |
+| Location | The device's GPS, or a simulator | Distance from the start, speed, time spent stationary, and named places saved from the current spot |
+| Heart rate | A Bluetooth strap or band that broadcasts the standard heart-rate service (Chrome on a computer or Android), or a simulator | Current rate, one-minute average, five-minute range, change over 30 seconds |
+| Glucose | A continuous glucose monitor through its Nightscout site (the open-source service many Dexcom and Libre users send readings to), or a simulator | Level in mg/dL and mmol/L, low / in range / high, trend, change over 15 minutes |
+| Motion | A phone's motion sensors, or a simulator | Still, moving or shaking; orientation; a drop |
+
+The camera sends frames. Every other sensor works a small JSON reading out on the device (`lib/sensor-hooks/`, fields described in `lib/sensors.ts`) and sends that instead (`lib/useStateWatcher.ts`, `app/api/judge`). Jev answers the same kind of yes/no question about a reading as about a frame, so every sensor shares the decide and act steps below.
+
+Words are picked out of the sound with OpenAI speech-to-text (`app/api/transcribe`), so that part needs an OpenAI key whichever provider sharpens rules. Without one, sound rules can still use loudness.
+
+Glucose readings are fetched from the Nightscout site by the server (`app/api/glucose`), since most such sites do not let a browser on another address read them.
+
+Webhook payloads include `sensor` and, for sensors other than the camera, the `reading` that set the rule off.
 
 ## Deploying
 

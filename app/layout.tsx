@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { BRAND_NAME, BRAND_TAGLINE } from "@/lib/brand";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -13,8 +14,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "vexo",
-  description: "If the camera sees this, then do that.",
+  title: `${BRAND_NAME} · ${BRAND_TAGLINE}`,
+  description:
+    "Connect a camera or any video feed, describe a moment in plain words, and an action runs the instant your device sees it.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

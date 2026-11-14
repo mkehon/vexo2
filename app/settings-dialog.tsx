@@ -11,8 +11,8 @@ function describe(status: KeyStatus): string {
 }
 
 const input =
-  "min-w-0 flex-1 rounded-lg border border-line bg-background px-3 py-2 outline-none placeholder:text-muted focus:border-accent";
-const button = "rounded-lg border border-line px-3 py-2 text-sm font-medium transition-colors hover:bg-background disabled:opacity-50";
+  "min-w-0 flex-1 rounded-lg border border-line bg-background px-3 py-2 outline-none placeholder:text-muted focus:border-brand focus:ring-2 focus:ring-brand/20";
+const button = "rounded-lg border border-line bg-card px-3 py-2 text-sm font-medium transition-colors hover:bg-background disabled:opacity-50";
 
 /** Sends a change to the server and returns the message to show, plus the updated settings. */
 async function update(body: object): Promise<{ ok: boolean; text: string; settings?: Settings }> {
@@ -25,7 +25,7 @@ async function update(body: object): Promise<{ ok: boolean; text: string; settin
     const result = await response.json();
     return { ok: response.ok, text: result.message ?? result.error ?? "", settings: result.settings };
   } catch {
-    return { ok: false, text: "Could not reach the vexo server." };
+    return { ok: false, text: "Could not reach the app's server on this computer." };
   }
 }
 
@@ -72,11 +72,11 @@ export function SettingsDialog(props: {
           <>
             <p className="text-sm text-muted">
               {settings.canEdit
-                ? "Keys are saved on this computer and used by every device that opens vexo from it, including your phone."
-                : "Settings are saved on the computer running vexo and can only be changed there."}
+                ? "Keys are saved on this computer and used by every device that opens the app from it, including your phone."
+                : "Settings are saved on the computer running the app and can only be changed there."}
             </p>
 
-            <section className="flex flex-col gap-2 rounded-xl border border-line p-4">
+            <section className="flex flex-col gap-2 rounded-xl border border-line bg-background/50 p-4">
               <KeyField
                 name="typesafe"
                 label="TypeSafe API key"
@@ -85,7 +85,7 @@ export function SettingsDialog(props: {
                 canEdit={settings.canEdit}
                 onChange={onChange}
               />
-              <p className="text-sm text-muted">Runs the detection on every frame.</p>
+              <p className="text-sm text-muted">Runs detection on every frame your devices send.</p>
             </section>
 
             <SharpeningSection settings={settings} onChange={onChange} />
@@ -108,14 +108,14 @@ function SharpeningSection({ settings, onChange }: { settings: Settings; onChang
   };
 
   return (
-    <section className="flex flex-col gap-3 rounded-xl border border-line p-4">
+    <section className="flex flex-col gap-3 rounded-xl border border-line bg-background/50 p-4">
       <div>
         <h3 className="font-medium">
-          Rule sharpening <span className="font-normal text-muted">(optional)</span>
+          Trigger sharpening <span className="font-normal text-muted">(optional)</span>
         </h3>
         <p className="text-sm text-muted">
-          An AI model turns each rule into a clearer question for the detector. Without a key, rules use your
-          sentence as written.
+          An AI model turns each trigger into a clearer yes/no question for the detector. Without a key, triggers use
+          your sentence as written.
         </p>
       </div>
 
@@ -131,7 +131,7 @@ function SharpeningSection({ settings, onChange }: { settings: Settings; onChang
               disabled={!canEdit}
               onClick={() => void choose(option)}
               className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition-colors disabled:cursor-default ${
-                option === provider ? "border-foreground bg-foreground text-background" : "border-line hover:bg-background"
+                option === provider ? "border-brand bg-brand-soft text-brand" : "border-line hover:bg-background"
               }`}
             >
               {PROVIDERS[option].label}

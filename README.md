@@ -1,6 +1,6 @@
-# vexo
+# Zapier for AI Wearables
 
-If the camera sees this, then do that. Connect a video source, describe what to watch for in a sentence, and choose what happens when it is seen.
+Vision automations for wearables and hardware: when your device sees it, your apps do it. Connect a camera or any video feed, describe a trigger in a sentence, and choose the action that runs when it is seen.
 
 ## Run it
 
@@ -12,7 +12,7 @@ npm run dev
 Then open **Settings** in the top right corner and paste your API keys:
 
 - **TypeSafe** (required): detection runs on TypeSafe's Jev model.
-- **Rule sharpening** (optional): pick OpenAI, Claude or Gemini and paste that provider's key. The model rewrites each rule into a sharper yes/no question about a single frame (`lib/sharpen.ts`). Without a key, the rule uses your sentence as written.
+- **Trigger sharpening** (optional): pick OpenAI, Claude or Gemini and paste that provider's key. The model rewrites each rule into a sharper yes/no question about a single frame (`lib/sharpen.ts`). Without a key, the rule uses your sentence as written.
 
 Keys are saved on this computer in `.vexo/keys.json`, which git ignores, and are used by every device that opens the app from it. They can only be changed from this computer, not from a phone. Setting the keys in `.env.local` also works; see `.env.example`.
 

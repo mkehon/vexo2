@@ -1,14 +1,19 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
+import { BRAND_NAME, BRAND_TAGLINE } from "@/lib/brand";
 import { NO_THRESHOLD, YES_THRESHOLD } from "@/lib/trigger";
 import type { CompiledRule, FiredEvent, Output, Rule, Settings } from "@/lib/types";
 import { useVideoSource, type VideoSource } from "@/lib/useVideoSource";
 import { useWatcher, type Reading } from "@/lib/useWatcher";
 import { SettingsDialog } from "./settings-dialog";
 
+// Kept as "rules" so automations saved before the redesign still load.
 const STORAGE_KEY = "vexo.rules";
 const MAX_EVENTS = 50;
+
+const TRIGGER_EXAMPLES = ["someone raises their hand", "a package is on the doorstep", "a dog is on the couch"];
+const COMING_SOON = ["Smart glasses", "AI pendants", "IP cameras", "Robots & drones"];
 
 function speak(message: string): boolean {
   if (!("speechSynthesis" in window)) return false;
@@ -26,7 +31,7 @@ async function sendWebhook(rule: Rule, probability: number, at: number): Promise
         url: rule.output.url,
         payload: {
           // `text` is the field Slack incoming webhooks display; the rest is for Zapier and custom receivers.
-          text: `vexo: ${rule.when}`,
+          text: `${BRAND_NAME}: ${rule.when}`,
           rule: rule.when,
           probability: Number(probability.toFixed(3)),
           at: new Date(at).toISOString(),
@@ -50,6 +55,18 @@ function isHttpUrl(value: string): boolean {
   }
 }
 
+function describeAction(output: Output): string {
+  if (output.kind === "speak") return `say “${output.message}” on the device`;
+  let host = output.url;
+  try {
+    host = new URL(output.url).hostname;
+  } catch {
+    // Saved before URLs were checked: show it as typed.
+  }
+  if (host === "hooks.slack.com") return "post to Slack";
+  return `send a webhook to ${host}`;
+}
+
 export default function Home() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const video = useVideoSource(videoRef);
@@ -59,13 +76,13 @@ export default function Home() {
   const [events, setEvents] = useState<FiredEvent[]>([]);
   const [fireCounts, setFireCounts] = useState<Record<string, number>>({});
 
-  // Rules survive a refresh. Loaded after mount so server and client render the same first page.
+  // Automations survive a refresh. Loaded after mount so server and client render the same first page.
   useEffect(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) setRules(JSON.parse(saved));
     } catch {
-      // Storage is unavailable or the saved value is unreadable: start with no rules.
+      // Storage is unavailable or the saved value is unreadable: start with no automations.
     }
     setRulesLoaded(true);
   }, []);
@@ -75,7 +92,7 @@ export default function Home() {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(rules));
     } catch {
-      // Storage is unavailable: rules last for this page view only.
+      // Storage is unavailable: automations last for this page view only.
     }
   }, [rules, rulesLoaded]);
 
@@ -140,43 +157,37 @@ export default function Home() {
   const enabledCount = rules.filter((rule) => rule.enabled).length;
 
   return (
-    <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-8 sm:px-6">
-      <header className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
-        <div className="flex items-baseline gap-3">
-          <h1 className="text-2xl font-bold tracking-tight">vexo</h1>
-          <p className="text-sm text-muted">If the camera sees this, then do that.</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          {needsDetectorKey ? (
-            <button
-              type="button"
-              className="text-sm font-medium text-danger underline underline-offset-4"
-              onClick={() => setSettingsOpen(true)}
-            >
-              Add your TypeSafe API key to start
-            </button>
-          ) : (
-            <StatusLine
+    <>
+      <header className="sticky top-0 z-10 border-b border-line bg-background/85 backdrop-blur">
+        <div className="mx-auto flex w-full max-w-6xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <Logo />
+            <span className="whitespace-nowrap text-base font-bold tracking-tight sm:text-lg">{BRAND_NAME}</span>
+            <span className="ml-1 hidden truncate border-l border-line pl-3 text-sm text-muted lg:inline">
+              {BRAND_TAGLINE}
+            </span>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <StatusPill
+              needsKey={needsDetectorKey}
               source={video.source}
               enabledCount={enabledCount}
               detectorMs={watcher.stats?.detectorMs}
-              error={watcher.error}
+              hasError={watcher.error !== null}
             />
-          )}
-          <button
-            type="button"
-            className={`${secondaryButton} relative flex items-center gap-2`}
-            onClick={() => setSettingsOpen(true)}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
-              <circle cx="12" cy="12" r="3" />
-              <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" />
-            </svg>
-            Settings
-            {needsDetectorKey && (
-              <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-danger" aria-hidden />
-            )}
-          </button>
+            <button
+              type="button"
+              className={`${secondaryButton} relative flex items-center gap-2`}
+              onClick={() => setSettingsOpen(true)}
+            >
+              <GearIcon />
+              <span className="hidden sm:inline">Settings</span>
+              <span className="sr-only sm:hidden">Settings</span>
+              {needsDetectorKey && (
+                <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-danger" aria-hidden />
+              )}
+            </button>
+          </div>
         </div>
       </header>
 
@@ -187,140 +198,262 @@ export default function Home() {
         onChange={setSettings}
       />
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card step="1" title="Connect video">
-          <VideoPanel videoRef={videoRef} video={video} />
-        </Card>
-        <RuleBuilder onCreate={(rule) => setRules((previous) => [rule, ...previous])} />
-      </div>
-
-      <section className="flex flex-col gap-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">Rules</h2>
-        {rules.length === 0 ? (
-          <p className="rounded-xl border border-dashed border-line px-4 py-6 text-sm text-muted">
-            No rules yet. Describe something to watch for above.
+      <main className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-4 pb-16 pt-8 sm:px-6 sm:pt-10">
+        <section className="flex flex-col gap-3">
+          <h1 className="max-w-3xl text-3xl font-bold tracking-tight text-balance sm:text-4xl">
+            When your device sees it, <span className="text-brand">your apps do it.</span>
+          </h1>
+          <p className="max-w-2xl text-pretty text-muted">
+            Connect a phone, a webcam or any video feed. Describe a moment in plain words and choose what happens
+            next. Every frame is checked, and the action runs the moment it happens.
           </p>
-        ) : (
-          rules.map((rule) => (
-            <RuleCard
-              key={rule.id}
-              rule={rule}
-              reading={watcher.readings[rule.id]}
-              hasVideo={video.source !== null}
-              fires={fireCounts[rule.id] ?? 0}
-              onToggle={() =>
-                setRules((previous) =>
-                  previous.map((item) => (item.id === rule.id ? { ...item, enabled: !item.enabled } : item)),
-                )
-              }
-              onDelete={() => setRules((previous) => previous.filter((item) => item.id !== rule.id))}
+        </section>
+
+        {needsDetectorKey && (
+          <Banner tone="danger" action={{ label: "Open settings", onClick: () => setSettingsOpen(true) }}>
+            <span className="font-semibold">One step left:</span> add your TypeSafe API key to start watching your
+            devices.
+          </Banner>
+        )}
+        {!needsDetectorKey && watcher.error && (
+          <Banner tone="danger">
+            <span className="font-semibold">The detector stopped:</span> {watcher.error}
+          </Banner>
+        )}
+
+        <div className="grid gap-6 lg:grid-cols-2 lg:items-start">
+          <DevicePanel videoRef={videoRef} video={video} />
+          <AutomationBuilder onCreate={(rule) => setRules((previous) => [rule, ...previous])} />
+        </div>
+
+        <div className="grid gap-8 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] lg:items-start">
+          <section className="flex flex-col gap-3">
+            <SectionHeader
+              title="Your automations"
+              meta={rules.length > 0 ? `${enabledCount} on · ${rules.length - enabledCount} off` : undefined}
             />
-          ))
-        )}
-      </section>
+            {rules.length === 0 ? (
+              <EmptyState title="No automations yet" detail="Describe a trigger above to create your first one." />
+            ) : (
+              rules.map((rule) => (
+                <AutomationCard
+                  key={rule.id}
+                  rule={rule}
+                  reading={watcher.readings[rule.id]}
+                  hasVideo={video.source !== null}
+                  runs={fireCounts[rule.id] ?? 0}
+                  onToggle={() =>
+                    setRules((previous) =>
+                      previous.map((item) => (item.id === rule.id ? { ...item, enabled: !item.enabled } : item)),
+                    )
+                  }
+                  onDelete={() => setRules((previous) => previous.filter((item) => item.id !== rule.id))}
+                />
+              ))
+            )}
+          </section>
 
-      <section className="flex flex-col gap-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">Activity</h2>
-        {events.length === 0 ? (
-          <p className="rounded-xl border border-dashed border-line px-4 py-6 text-sm text-muted">
-            Nothing has fired yet.
-          </p>
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {events.map((event) => (
-              <li key={event.id} className="flex items-center gap-4 rounded-xl border border-line bg-card p-3">
-                {/* eslint-disable-next-line @next/next/no-img-element -- a data URL, nothing to optimize */}
-                <img src={event.thumbnail} alt="" className="h-14 w-24 shrink-0 rounded-md bg-black object-cover" />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium">{event.when}</p>
-                  <p className="truncate text-sm text-muted">{event.result}</p>
-                </div>
-                <div className="shrink-0 text-right text-sm tabular-nums text-muted">
-                  <p>{new Date(event.at).toLocaleTimeString()}</p>
-                  <p>{Math.round(event.probability * 100)}% sure</p>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-    </main>
+          <section className="flex flex-col gap-3">
+            <SectionHeader
+              title="Run history"
+              meta={events.length > 0 ? `${events.length} ${events.length === 1 ? "run" : "runs"}` : undefined}
+            />
+            {events.length === 0 ? (
+              <EmptyState title="Nothing has run yet" detail="Each time an automation runs, the frame that triggered it shows up here." />
+            ) : (
+              <ul className="flex flex-col gap-2">
+                {events.map((event) => (
+                  <li key={event.id} className="flex items-center gap-3 rounded-xl border border-line bg-card p-2.5">
+                    {/* eslint-disable-next-line @next/next/no-img-element -- a data URL, nothing to optimize */}
+                    <img src={event.thumbnail} alt="" className="h-12 w-20 shrink-0 rounded-lg bg-black object-cover" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">{event.when}</p>
+                      <p className="truncate text-sm text-muted">{event.result}</p>
+                    </div>
+                    <div className="shrink-0 text-right text-xs tabular-nums text-muted">
+                      <p>{new Date(event.at).toLocaleTimeString()}</p>
+                      <p>{Math.round(event.probability * 100)}% sure</p>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </div>
+      </main>
+    </>
   );
 }
 
-function StatusLine(props: {
-  source: VideoSource | null;
-  enabledCount: number;
-  detectorMs?: number;
-  error: string | null;
-}) {
-  const { source, enabledCount, detectorMs, error } = props;
-  if (error) {
-    return (
-      <p role="alert" className="text-sm font-medium text-danger">
-        {error}
-      </p>
-    );
-  }
-  if (!source) return <p className="text-sm text-muted">No video connected</p>;
-  if (enabledCount === 0) return <p className="text-sm text-muted">Video connected. Add a rule to start watching.</p>;
-  return (
-    <p className="flex items-center gap-2 text-sm tabular-nums text-muted">
-      <span className="h-2 w-2 animate-pulse rounded-full bg-hit" aria-hidden />
-      Watching {enabledCount} {enabledCount === 1 ? "rule" : "rules"}
-      {detectorMs !== undefined && ` · ${detectorMs} ms per check`}
-    </p>
-  );
-}
+/* ---------- Shared pieces ---------- */
 
-function Card(props: { step: string; title: string; children: React.ReactNode }) {
+const focusRing = "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
+
+const secondaryButton = `rounded-lg border border-line bg-card px-3 py-2 text-sm font-medium transition-colors hover:bg-background disabled:opacity-50 ${focusRing}`;
+
+const primaryButton = `rounded-xl bg-brand px-5 py-2.5 text-sm font-semibold text-on-brand shadow-sm transition-opacity hover:opacity-90 disabled:opacity-40 ${focusRing}`;
+
+const textInput =
+  "w-full rounded-xl border border-line bg-background px-3.5 py-3 outline-none placeholder:text-muted focus:border-brand focus:ring-2 focus:ring-brand/20";
+
+type Tone = "neutral" | "brand" | "hit";
+
+const toneBox: Record<Tone, string> = {
+  neutral: "bg-background text-foreground border border-line",
+  brand: "bg-brand-soft text-brand",
+  hit: "bg-hit-soft text-hit",
+};
+
+const toneText: Record<Tone, string> = {
+  neutral: "text-muted",
+  brand: "text-brand",
+  hit: "text-hit",
+};
+
+function Panel(props: { tone: Tone; icon: ReactNode; eyebrow: string; title: string; aside?: ReactNode; children: ReactNode }) {
+  const { tone, icon, eyebrow, title, aside, children } = props;
   return (
-    <section className="flex flex-col gap-4 rounded-2xl border border-line bg-card p-5">
-      <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted">
-        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-foreground text-xs text-background">
-          {props.step}
-        </span>
-        {props.title}
-      </h2>
-      {props.children}
+    <section className="flex flex-col gap-4 rounded-2xl border border-line bg-card p-5 shadow-[0_1px_2px_rgb(0_0_0/0.04)]">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${toneBox[tone]}`}>{icon}</span>
+          <div className="min-w-0">
+            <p className={`text-xs font-semibold uppercase tracking-wider ${toneText[tone]}`}>{eyebrow}</p>
+            <h2 className="truncate font-semibold">{title}</h2>
+          </div>
+        </div>
+        {aside}
+      </div>
+      {children}
     </section>
   );
 }
 
-const secondaryButton =
-  "rounded-lg border border-line px-3 py-2 text-sm font-medium transition-colors hover:bg-background disabled:opacity-50";
+function SectionHeader({ title, meta }: { title: string; meta?: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-4">
+      <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
+      {meta && <p className="text-sm tabular-nums text-muted">{meta}</p>}
+    </div>
+  );
+}
 
-function VideoPanel(props: {
-  videoRef: React.RefObject<HTMLVideoElement | null>;
-  video: ReturnType<typeof useVideoSource>;
+function EmptyState({ title, detail }: { title: string; detail: string }) {
+  return (
+    <div className="rounded-2xl border border-dashed border-line px-5 py-8 text-center">
+      <p className="font-medium">{title}</p>
+      <p className="mt-1 text-sm text-muted">{detail}</p>
+    </div>
+  );
+}
+
+function Banner(props: { tone: "danger"; children: ReactNode; action?: { label: string; onClick: () => void } }) {
+  return (
+    <div
+      role="alert"
+      className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-danger/30 bg-danger-soft px-4 py-3 text-sm"
+    >
+      <p className="min-w-0">{props.children}</p>
+      {props.action && (
+        <button type="button" className={secondaryButton} onClick={props.action.onClick}>
+          {props.action.label}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function StatusPill(props: {
+  needsKey: boolean;
+  source: VideoSource | null;
+  enabledCount: number;
+  detectorMs?: number;
+  hasError: boolean;
 }) {
+  const { needsKey, source, enabledCount, detectorMs, hasError } = props;
+  let tone: "idle" | "live" | "error" = "idle";
+  let text = "No device";
+  if (needsKey) {
+    tone = "error";
+    text = "Setup needed";
+  } else if (hasError) {
+    tone = "error";
+    text = "Detector error";
+  } else if (source && enabledCount === 0) {
+    text = "Device connected";
+  } else if (source) {
+    tone = "live";
+    text = `Live · ${enabledCount} on${detectorMs !== undefined ? ` · ${detectorMs} ms` : ""}`;
+  }
+
+  const styles = {
+    idle: "border-line text-muted",
+    live: "border-hit/40 bg-hit-soft text-hit",
+    error: "border-danger/40 bg-danger-soft text-danger",
+  }[tone];
+  const dot = { idle: "bg-muted/60", live: "bg-hit animate-pulse", error: "bg-danger" }[tone];
+
+  return (
+    <p
+      role="status"
+      className={`flex items-center gap-2 whitespace-nowrap rounded-full border px-2.5 py-1.5 text-xs font-medium tabular-nums sm:px-3 ${styles}`}
+    >
+      <span className={`h-2 w-2 rounded-full ${dot}`} aria-hidden />
+      {/* Phones show only the dot so the name fits; the video badge and banners carry the detail there. */}
+      <span className="sr-only sm:not-sr-only">{text}</span>
+    </p>
+  );
+}
+
+/* ---------- Step 1: device ---------- */
+
+function DevicePanel(props: { videoRef: RefObject<HTMLVideoElement | null>; video: ReturnType<typeof useVideoSource> }) {
   const { videoRef, video } = props;
   const fileInput = useRef<HTMLInputElement>(null);
   const { source } = video;
 
   return (
-    <>
-      <div className="relative overflow-hidden rounded-lg bg-black">
+    <Panel tone="neutral" icon={<DeviceIcon />} eyebrow="1 · Device" title="Connect a device">
+      <div className="relative overflow-hidden rounded-xl bg-black">
         <video ref={videoRef} muted playsInline className="aspect-video w-full object-contain" />
         {!source && (
-          <p className="absolute inset-0 flex items-center justify-center text-sm text-white/60">
-            Pick a source below
-          </p>
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/60">
+            <EyeIcon size={28} />
+            <p className="text-sm">Pick a device below to start watching</p>
+          </div>
+        )}
+        {source && (
+          <span className="absolute left-3 top-3 flex items-center gap-1.5 rounded-full bg-black/60 px-2.5 py-1 text-xs font-semibold text-white backdrop-blur">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-500" aria-hidden />
+            {source.kind === "file" ? "Replay" : "Live"}
+          </span>
         )}
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <button type="button" className={secondaryButton} onClick={() => video.connectCamera()}>
-          Camera
-        </button>
+      <div className="grid gap-2 sm:grid-cols-3">
+        <ConnectorTile
+          icon={<CameraIcon />}
+          title="Camera"
+          detail="Phone, webcam or USB camera"
+          active={source?.kind === "camera"}
+          onClick={() => void video.connectCamera()}
+        />
         {video.canShareScreen && (
-          <button type="button" className={secondaryButton} onClick={() => video.connectScreen()}>
-            Screen or tab
-          </button>
+          <ConnectorTile
+            icon={<ScreenIcon />}
+            title="Screen or tab"
+            detail="A companion app or live stream"
+            active={source?.kind === "screen"}
+            onClick={() => void video.connectScreen()}
+          />
         )}
-        <button type="button" className={secondaryButton} onClick={() => fileInput.current?.click()}>
-          Video file
-        </button>
+        <ConnectorTile
+          icon={<FilmIcon />}
+          title="Video file"
+          detail="Recorded footage, on loop"
+          active={source?.kind === "file"}
+          onClick={() => fileInput.current?.click()}
+        />
         <input
           ref={fileInput}
           type="file"
@@ -332,11 +465,6 @@ function VideoPanel(props: {
             event.target.value = "";
           }}
         />
-        {source && (
-          <button type="button" className={`${secondaryButton} ml-auto`} onClick={video.disconnect}>
-            Disconnect
-          </button>
-        )}
       </div>
 
       {source?.kind === "camera" && video.cameras.length > 1 && (
@@ -356,20 +484,63 @@ function VideoPanel(props: {
         </label>
       )}
 
-      {source && source.kind !== "camera" && <p className="truncate text-sm text-muted">{source.label}</p>}
+      {source && (
+        <div className="flex items-center justify-between gap-3">
+          <p className="min-w-0 truncate text-sm text-muted">
+            Connected: <span className="font-medium text-foreground">{source.label}</span>
+          </p>
+          <button type="button" className={`${secondaryButton} shrink-0`} onClick={video.disconnect}>
+            Disconnect
+          </button>
+        </div>
+      )}
       {video.error && (
         <p role="alert" className="text-sm text-danger">
           {video.error}
         </p>
       )}
-    </>
+
+      <div className="flex flex-wrap items-center gap-2 border-t border-line pt-4 text-xs text-muted">
+        <span className="font-semibold uppercase tracking-wider">Coming soon</span>
+        {COMING_SOON.map((name) => (
+          <span key={name} className="rounded-full border border-dashed border-line px-2.5 py-1">
+            {name}
+          </span>
+        ))}
+      </div>
+    </Panel>
   );
 }
 
-const textInput =
-  "w-full rounded-lg border border-line bg-background px-3 py-2.5 outline-none placeholder:text-muted focus:border-accent";
+function ConnectorTile(props: { icon: ReactNode; title: string; detail: string; active: boolean; onClick: () => void }) {
+  const { icon, title, detail, active, onClick } = props;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={`flex items-center gap-3 rounded-xl border p-3 text-left transition-colors sm:flex-col sm:items-start sm:gap-2 ${focusRing} ${
+        active ? "border-brand bg-brand-soft" : "border-line hover:bg-background"
+      }`}
+    >
+      <span
+        className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${
+          active ? "bg-brand text-on-brand" : "bg-background text-foreground"
+        }`}
+      >
+        {icon}
+      </span>
+      <span className="min-w-0">
+        <span className="block text-sm font-semibold">{title}</span>
+        <span className="block text-xs text-muted">{detail}</span>
+      </span>
+    </button>
+  );
+}
 
-function RuleBuilder({ onCreate }: { onCreate: (rule: Rule) => void }) {
+/* ---------- Steps 2 and 3: trigger and action ---------- */
+
+function AutomationBuilder({ onCreate }: { onCreate: (rule: Rule) => void }) {
   const [when, setWhen] = useState("");
   const [kind, setKind] = useState<Output["kind"]>("speak");
   const [message, setMessage] = useState("");
@@ -395,7 +566,7 @@ function RuleBuilder({ onCreate }: { onCreate: (rule: Rule) => void }) {
         body: JSON.stringify({ when: sentence }),
       });
       const compiled = (await response.json()) as CompiledRule & { error?: string };
-      if (!response.ok) throw new Error(compiled.error ?? "Could not create the rule.");
+      if (!response.ok) throw new Error(compiled.error ?? "Could not create the automation.");
 
       onCreate({
         id: crypto.randomUUID(),
@@ -414,139 +585,187 @@ function RuleBuilder({ onCreate }: { onCreate: (rule: Rule) => void }) {
       setWhen("");
       setMessage("");
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not create the rule.");
+      setError(caught instanceof Error ? caught.message : "Could not create the automation.");
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <form onSubmit={submit} className="flex flex-col gap-6">
-      <Card step="2" title="Define what to watch for">
-        <label className="flex items-center gap-4">
-          <span className="w-20 shrink-0 text-3xl font-black tracking-tight text-accent">IF</span>
+    <form onSubmit={submit} className="flex flex-col">
+      <Panel tone="brand" icon={<EyeIcon />} eyebrow="2 · Trigger" title="When your device sees…">
+        <input
+          className={textInput}
+          value={when}
+          onChange={(event) => setWhen(event.target.value)}
+          placeholder="someone holds up a mug"
+          aria-label="What to watch for"
+        />
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-muted">Try:</span>
+          {TRIGGER_EXAMPLES.map((example) => (
+            <button
+              key={example}
+              type="button"
+              onClick={() => setWhen(example)}
+              className={`rounded-full border border-line px-2.5 py-1 text-muted transition-colors hover:border-brand hover:text-brand ${focusRing}`}
+            >
+              {example}
+            </button>
+          ))}
+        </div>
+      </Panel>
+
+      <StepConnector />
+
+      <Panel tone="hit" icon={<BoltIcon />} eyebrow="3 · Action" title="Then do this">
+        <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Action">
+          {(
+            [
+              ["speak", <SpeakerIcon key="icon" />, "Speak on device", "Say a sentence out loud"],
+              ["webhook", <SendIcon key="icon" />, "Webhook", "Slack, Make, n8n, Zapier or any URL"],
+            ] as const
+          ).map(([value, icon, label, detail]) => {
+            const selected = kind === value;
+            return (
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                onClick={() => setKind(value)}
+                className={`flex items-start gap-2.5 rounded-xl border p-3 text-left transition-colors ${focusRing} ${
+                  selected ? "border-hit bg-hit-soft" : "border-line hover:bg-background"
+                }`}
+              >
+                <span className={`mt-0.5 shrink-0 ${selected ? "text-hit" : "text-muted"}`}>{icon}</span>
+                <span className="min-w-0">
+                  <span className="block text-sm font-semibold">{label}</span>
+                  <span className="block text-xs text-muted">{detail}</span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        {kind === "speak" ? (
           <input
             className={textInput}
-            value={when}
-            onChange={(event) => setWhen(event.target.value)}
-            placeholder="someone holds up a mug"
-            aria-label="What to watch for"
+            value={message}
+            onChange={(event) => setMessage(event.target.value)}
+            placeholder="What to say (leave empty to have it worded for you)"
+            aria-label="What to say"
           />
-        </label>
-      </Card>
+        ) : (
+          <input
+            className={textInput}
+            value={url}
+            onChange={(event) => setUrl(event.target.value)}
+            placeholder="https://hooks.slack.com/… or any webhook URL"
+            aria-label="Webhook URL"
+            inputMode="url"
+          />
+        )}
+      </Panel>
 
-      <Card step="3" title="Define what happens">
-        <div className="flex items-start gap-4">
-          <span className="w-20 shrink-0 text-3xl font-black tracking-tight text-hit">THEN</span>
-          <div className="flex min-w-0 flex-1 flex-col gap-3">
-            <div className="flex gap-2" role="radiogroup" aria-label="What happens">
-              {(
-                [
-                  ["speak", "Say it out loud"],
-                  ["webhook", "Send a webhook"],
-                ] as const
-              ).map(([value, label]) => (
-                <button
-                  key={value}
-                  type="button"
-                  role="radio"
-                  aria-checked={kind === value}
-                  onClick={() => setKind(value)}
-                  className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
-                    kind === value ? "border-foreground bg-foreground text-background" : "border-line hover:bg-background"
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            {kind === "speak" ? (
-              <input
-                className={textInput}
-                value={message}
-                onChange={(event) => setMessage(event.target.value)}
-                placeholder="What to say (leave empty to have it worded for you)"
-                aria-label="What to say"
-              />
-            ) : (
-              <input
-                className={textInput}
-                value={url}
-                onChange={(event) => setUrl(event.target.value)}
-                placeholder="https://hooks.slack.com/… or a Zapier webhook URL"
-                aria-label="Webhook URL"
-                inputMode="url"
-              />
-            )}
-          </div>
-        </div>
-
-        <div className="flex items-center justify-end gap-4">
-          {error && (
-            <p role="alert" className="text-sm text-danger">
-              {error}
-            </p>
-          )}
-          <button
-            type="submit"
-            disabled={busy || !when.trim()}
-            className="rounded-lg bg-foreground px-4 py-2.5 text-sm font-semibold text-background transition-opacity disabled:opacity-40"
-          >
-            {busy ? "Creating…" : "Create rule"}
-          </button>
-        </div>
-      </Card>
+      <div className="mt-4 flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
+        {error && (
+          <p role="alert" className="min-w-0 flex-1 text-sm text-danger">
+            {error}
+          </p>
+        )}
+        <button type="submit" disabled={busy || !when.trim()} className={`${primaryButton} flex items-center gap-2`}>
+          {busy ? "Setting it up…" : "Turn on automation"}
+          {!busy && <ArrowRightIcon />}
+        </button>
+      </div>
     </form>
   );
 }
 
-function RuleCard(props: {
+function StepConnector() {
+  return (
+    <div className="flex flex-col items-center" aria-hidden>
+      <span className="h-3 w-px bg-line" />
+      <span className="flex h-7 w-7 items-center justify-center rounded-full border border-line bg-card text-muted">
+        <ArrowDownIcon />
+      </span>
+      <span className="h-3 w-px bg-line" />
+    </div>
+  );
+}
+
+/* ---------- Automation list ---------- */
+
+function AutomationCard(props: {
   rule: Rule;
   reading?: Reading;
   hasVideo: boolean;
-  fires: number;
+  runs: number;
   onToggle: () => void;
   onDelete: () => void;
 }) {
-  const { rule, reading, hasVideo, fires, onToggle, onDelete } = props;
+  const { rule, reading, hasVideo, runs, onToggle, onDelete } = props;
   const percent = reading ? Math.round(reading.probability * 100) : 0;
+  const detected = rule.enabled && reading?.on === true;
 
-  let status = "Watching";
-  if (!rule.enabled) status = "Paused";
-  else if (!hasVideo) status = "Connect video to start";
-  else if (!reading) status = "Waiting for the first check";
-  else if (reading.on) status = "Detected";
+  let status = { text: "Watching", className: "bg-brand-soft text-brand" };
+  if (!rule.enabled) status = { text: "Off", className: "border border-line text-muted" };
+  else if (!hasVideo) status = { text: "Waiting for a device", className: "border border-line text-muted" };
+  else if (!reading) status = { text: "Starting…", className: "border border-line text-muted" };
+  else if (reading.on) status = { text: "Detected", className: "bg-hit text-on-brand" };
 
   return (
     <article
-      className={`flex flex-col gap-3 rounded-xl border bg-card p-4 transition-colors ${
-        reading?.on ? "border-hit" : "border-line"
-      } ${rule.enabled ? "" : "opacity-60"}`}
+      className={`flex flex-col gap-3 rounded-2xl border bg-card p-4 transition-colors ${
+        detected ? "border-hit ring-1 ring-hit" : "border-line"
+      }`}
     >
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <p className="font-medium">
-            <span className="mr-2 font-black text-accent">IF</span>
-            {rule.when}
-          </p>
-          <p className="text-muted">
-            <span className="mr-2 font-black text-hit">THEN</span>
-            {rule.output.kind === "speak" ? `say “${rule.output.message}”` : `send a webhook to ${rule.output.url}`}
-          </p>
+      <div className="flex items-center justify-between gap-3">
+        <div className={`flex items-center gap-1.5 ${rule.enabled ? "" : "opacity-50"}`} aria-hidden>
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-brand-soft text-brand">
+            <EyeIcon />
+          </span>
+          <span className="text-muted">
+            <ChevronRightIcon />
+          </span>
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-hit-soft text-hit">
+            {rule.output.kind === "speak" ? <SpeakerIcon /> : <SendIcon />}
+          </span>
         </div>
-        <div className="flex shrink-0 gap-2">
-          <button type="button" className={secondaryButton} onClick={onToggle}>
-            {rule.enabled ? "Pause" : "Resume"}
-          </button>
-          <button type="button" className={secondaryButton} onClick={onDelete} aria-label={`Delete rule: ${rule.when}`}>
-            Delete
+        <div className="flex items-center gap-1">
+          <label className="flex cursor-pointer items-center gap-2 pr-1 text-sm font-medium text-muted">
+            {rule.enabled ? "On" : "Off"}
+            <Switch on={rule.enabled} onToggle={onToggle} label={`Automation: ${rule.when}`} />
+          </label>
+          <button
+            type="button"
+            className={`rounded-lg p-2 text-muted transition-colors hover:bg-danger-soft hover:text-danger ${focusRing}`}
+            onClick={onDelete}
+            aria-label={`Delete automation: ${rule.when}`}
+            title="Delete"
+          >
+            <TrashIcon />
           </button>
         </div>
       </div>
 
+      <div className={`min-w-0 ${rule.enabled ? "" : "opacity-60"}`}>
+        <p className="font-medium break-words">
+          <span className="mr-1.5 text-xs font-bold uppercase tracking-wider text-brand">When</span>
+          {rule.when}
+        </p>
+        <p
+          className="break-words text-sm text-muted"
+          title={rule.output.kind === "webhook" ? rule.output.url : undefined}
+        >
+          <span className="mr-1.5 text-xs font-bold uppercase tracking-wider text-hit">Then</span>
+          {describeAction(rule.output)}
+        </p>
+      </div>
+
       <div className="flex items-center gap-3">
         <div
-          className="relative h-2.5 flex-1 rounded-full bg-line"
+          className="relative h-2 flex-1 rounded-full bg-line"
           role="meter"
           aria-valuenow={percent}
           aria-valuemin={0}
@@ -554,34 +773,202 @@ function RuleCard(props: {
           aria-label="How sure the detector is"
         >
           <div
-            className={`h-full rounded-full transition-[width] duration-300 ${reading?.on ? "bg-hit" : "bg-accent"}`}
+            className={`h-full rounded-full transition-[width] duration-300 ${detected ? "bg-hit" : "bg-brand"}`}
             style={{ width: `${percent}%` }}
           />
           {[NO_THRESHOLD, YES_THRESHOLD].map((threshold) => (
             <span
               key={threshold}
-              className="absolute -top-1 h-4.5 w-px bg-muted"
+              className="absolute -top-1 h-4 w-px bg-muted"
               style={{ left: `${threshold * 100}%` }}
               aria-hidden
             />
           ))}
         </div>
-        <span className="w-12 text-right text-sm font-semibold tabular-nums">{reading ? `${percent}%` : "–"}</span>
+        <span className="w-10 text-right text-sm font-semibold tabular-nums">{reading ? `${percent}%` : "–"}</span>
       </div>
 
-      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-sm text-muted">
-        <p className="min-w-0">
-          <span className={reading?.on ? "font-semibold text-hit" : "font-medium text-foreground"}>{status}</span>
-          <span className="mx-2" aria-hidden>
-            ·
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5 text-sm text-muted">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ${status.className}`}>
+            {status.text}
           </span>
-          Checking: “{rule.question}”
-        </p>
+          <span className="min-w-0 truncate" title={rule.question}>
+            Checking: “{rule.question}”
+          </span>
+        </div>
         <p className="shrink-0 tabular-nums">
-          Fired {fires} {fires === 1 ? "time" : "times"}
+          Ran {runs} {runs === 1 ? "time" : "times"}
         </p>
       </div>
       {!rule.compiled && rule.note && <p className="text-sm text-muted">Using your sentence as written. {rule.note}</p>}
     </article>
+  );
+}
+
+function Switch({ on, onToggle, label }: { on: boolean; onToggle: () => void; label: string }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={label}
+      onClick={onToggle}
+      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${focusRing} ${
+        on ? "bg-brand" : "bg-line"
+      }`}
+    >
+      <span
+        className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${
+          on ? "translate-x-5.5" : "translate-x-0.5"
+        }`}
+      />
+    </button>
+  );
+}
+
+/* ---------- Icons ---------- */
+
+function Icon({ size = 18, children }: { size?: number; children: ReactNode }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      {children}
+    </svg>
+  );
+}
+
+function Logo() {
+  return (
+    <svg width="28" height="28" viewBox="0 0 32 32" aria-hidden className="shrink-0">
+      <rect width="32" height="32" rx="8" fill="var(--brand)" />
+      <g fill="none" stroke="var(--on-brand)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="16" r="6" />
+        <path d="M20.5 16H27M24 12.75 27.25 16 24 19.25" />
+      </g>
+      <circle cx="12" cy="16" r="2" fill="var(--on-brand)" />
+    </svg>
+  );
+}
+
+function EyeIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
+      <circle cx="12" cy="12" r="3" />
+    </Icon>
+  );
+}
+
+function DeviceIcon() {
+  return (
+    <Icon>
+      <rect x="2" y="7" width="20" height="10" rx="5" />
+      <circle cx="7.5" cy="12" r="2" />
+      <circle cx="16.5" cy="12" r="2" />
+    </Icon>
+  );
+}
+
+function CameraIcon() {
+  return (
+    <Icon>
+      <path d="m16 13 5.2 3.5a.5.5 0 0 0 .8-.4V7.9a.5.5 0 0 0-.8-.4L16 11" />
+      <rect x="2" y="6" width="14" height="12" rx="2" />
+    </Icon>
+  );
+}
+
+function ScreenIcon() {
+  return (
+    <Icon>
+      <rect x="2" y="3" width="20" height="14" rx="2" />
+      <path d="M8 21h8M12 17v4" />
+    </Icon>
+  );
+}
+
+function FilmIcon() {
+  return (
+    <Icon>
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <path d="M7 3v18M17 3v18M3 7.5h4M3 12h18M3 16.5h4M17 7.5h4M17 16.5h4" />
+    </Icon>
+  );
+}
+
+function BoltIcon() {
+  return (
+    <Icon>
+      <path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z" />
+    </Icon>
+  );
+}
+
+function SpeakerIcon() {
+  return (
+    <Icon>
+      <path d="M11 5 6 9H2v6h4l5 4V5Z" />
+      <path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14" />
+    </Icon>
+  );
+}
+
+function SendIcon() {
+  return (
+    <Icon>
+      <path d="m22 2-7 20-4-9-9-4Z" />
+      <path d="M22 2 11 13" />
+    </Icon>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <Icon size={16}>
+      <path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+    </Icon>
+  );
+}
+
+function ArrowRightIcon() {
+  return (
+    <Icon size={16}>
+      <path d="M5 12h14M13 6l6 6-6 6" />
+    </Icon>
+  );
+}
+
+function ArrowDownIcon() {
+  return (
+    <Icon size={14}>
+      <path d="M12 5v14M6 13l6 6 6-6" />
+    </Icon>
+  );
+}
+
+function ChevronRightIcon() {
+  return (
+    <Icon size={14}>
+      <path d="m9 6 6 6-6 6" />
+    </Icon>
+  );
+}
+
+function GearIcon() {
+  return (
+    <Icon size={16}>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" />
+    </Icon>
   );
 }

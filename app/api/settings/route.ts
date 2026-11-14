@@ -72,7 +72,7 @@ export async function GET(request: Request): Promise<Response> {
 export async function POST(request: Request): Promise<Response> {
   if (!isThisComputer(request)) {
     return Response.json(
-      { error: "Settings can only be changed on the computer running vexo.", settings: settingsFor(request) },
+      { error: "Settings can only be changed on the computer running the app.", settings: settingsFor(request) },
       { status: 403 },
     );
   }

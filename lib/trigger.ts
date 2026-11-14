@@ -32,7 +32,7 @@ export function step(
   trigger: Trigger,
   probability: number,
   now: number,
-): { next: Trigger; fired: boolean } {
+): { next: Trigger; fired: boolean; pending: boolean } {
   let { on, yesStreak, noStreak, lastFiredAt } = trigger;
 
   if (probability >= YES_THRESHOLD) {
@@ -54,5 +54,8 @@ export function step(
     on = false;
   }
 
-  return { next: { on, yesStreak, noStreak, lastFiredAt }, fired };
+  // This reading pointed towards a change of state that still needs its confirming reading.
+  const pending = on ? probability <= NO_THRESHOLD : probability >= YES_THRESHOLD;
+
+  return { next: { on, yesStreak, noStreak, lastFiredAt }, fired, pending };
 }

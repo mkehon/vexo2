@@ -4,10 +4,29 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { newTrigger, step, type Trigger } from "./trigger";
 import type { Rule, WatchQuestion } from "./types";
 
-/** Shortest gap between the start of two checks: about two checks a second. */
-const MIN_INTERVAL_MS = 500;
+/**
+ * Timing of the checks. A check takes roughly a tenth of a second, so the delay a person
+ * notices comes from when checks start, not from the detector. The loop therefore checks
+ * straight away when the picture changes or a rule is waiting on its confirming reading,
+ * and falls back to a slow steady pace while nothing is happening.
+ */
+/** How often to check while the picture is still. */
+const IDLE_INTERVAL_MS = 500;
+/** Shortest gap between the start of two checks: a ceiling of about ten a second. */
+const MIN_INTERVAL_MS = 100;
+/** How often the picture is compared with the one last checked. */
+const MOTION_POLL_MS = 50;
 /** Wait after a failed check, so a missing key or outage doesn't spam requests. */
 const ERROR_BACKOFF_MS = 2000;
+
+/** The picture is compared as a coarse grid of brightness values. */
+const GRID_WIDTH = 64;
+const GRID_HEIGHT = 36;
+/** A cell counts as changed when its brightness (0–255) moves by more than this; camera noise stays below it. */
+const CELL_CHANGE = 12;
+/** This many changed cells means the picture has changed. */
+const CHANGED_CELLS = 3;
+
 /** The detector accepts images between 280 and 1568 px per side. */
 const FRAME_LONG_SIDE = 1024;
 const FRAME_MIN_SIDE = 280;
@@ -24,6 +43,8 @@ export type WatchStats = {
   /** Time the detector took on the latest frame. */
   detectorMs: number;
   model: string;
+  /** Checks started over the last two seconds, per second. */
+  checksPerSecond: number;
 };
 
 /** Draws the current video frame onto the canvas, sized to what the detector accepts. */
@@ -59,9 +80,31 @@ function thumbnailOf(canvas: HTMLCanvasElement): string {
   return small.toDataURL("image/jpeg", 0.6);
 }
 
+/** The current video frame as a coarse grid of brightness values. */
+function brightnessGrid(video: HTMLVideoElement, canvas: HTMLCanvasElement): Uint8Array | null {
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) return null;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(video, 0, 0, GRID_WIDTH, GRID_HEIGHT);
+  const { data } = context.getImageData(0, 0, GRID_WIDTH, GRID_HEIGHT);
+  const grid = new Uint8Array(GRID_WIDTH * GRID_HEIGHT);
+  for (let cell = 0; cell < grid.length; cell++) {
+    grid[cell] = (data[cell * 4] + data[cell * 4 + 1] + data[cell * 4 + 2]) / 3;
+  }
+  return grid;
+}
+
+function hasChanged(current: Uint8Array, reference: Uint8Array): boolean {
+  let changed = 0;
+  for (let cell = 0; cell < current.length; cell++) {
+    if (Math.abs(current[cell] - reference[cell]) > CELL_CHANGE && ++changed >= CHANGED_CELLS) return true;
+  }
+  return false;
+}
+
 /**
- * While `active`, sends the latest video frame to the detector with every enabled rule's
- * question, and calls `onFire` when a rule's condition changes from no to yes.
+ * While `active`, sends video frames to the detector with every enabled rule's question,
+ * and calls `onFire` when a rule's condition changes from no to yes.
  */
 export function useWatcher(options: {
   videoRef: RefObject<HTMLVideoElement | null>;
@@ -91,68 +134,99 @@ export function useWatcher(options: {
     }
 
     let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const canvas = document.createElement("canvas");
+    const frameCanvas = document.createElement("canvas");
+    const gridCanvas = document.createElement("canvas");
+    gridCanvas.width = GRID_WIDTH;
+    gridCanvas.height = GRID_HEIGHT;
     const triggers = new Map<string, Trigger>();
 
-    const check = async (): Promise<void> => {
-      const enabled = rulesRef.current.filter((rule) => rule.enabled);
-      // A rule that is removed or switched off starts fresh if it comes back.
-      for (const id of triggers.keys()) {
-        if (!enabled.some((rule) => rule.id === id)) triggers.delete(id);
-      }
+    let checking = false;
+    let lastStarted = -Infinity;
+    let retryAfter = 0;
+    /** The picture as it was when the latest check started. */
+    let reference: Uint8Array | null = null;
+    /** A rule is one reading away from changing state, so the next check should not wait. */
+    let confirming = false;
+    let recentStarts: number[] = [];
 
-      const video = videoRef.current;
-      if (enabled.length === 0 || !video || video.readyState < 2 || !video.videoWidth) {
-        setReadings((previous) => (Object.keys(previous).length ? {} : previous));
-        return;
-      }
-
-      drawFrame(video, canvas);
+    /** Sends one frame to the detector. Returns whether any rule is waiting on a confirming reading. */
+    const check = async (video: HTMLVideoElement, enabled: Rule[]): Promise<boolean> => {
+      drawFrame(video, frameCanvas);
       const form = new FormData();
-      form.append("frame", await toJpeg(canvas), "frame.jpg");
+      form.append("frame", await toJpeg(frameCanvas), "frame.jpg");
       const questions: WatchQuestion[] = enabled.map(({ id, question, yes, no }) => ({ id, question, yes, no }));
       form.append("questions", JSON.stringify(questions));
 
       const response = await fetch("/api/watch", { method: "POST", body: form });
       const body = await response.json();
-      if (cancelled) return;
+      if (cancelled) return false;
       if (!response.ok) throw new Error(body.error ?? `The detector returned ${response.status}.`);
 
       const now = Date.now();
       const next: Record<string, Reading> = {};
+      let anyPending = false;
       for (const rule of enabled) {
         const probability = body.answers?.[rule.id];
         if (typeof probability !== "number") continue;
-        const { next: trigger, fired } = step(triggers.get(rule.id) ?? newTrigger(), probability, now);
+        const { next: trigger, fired, pending } = step(triggers.get(rule.id) ?? newTrigger(), probability, now);
         triggers.set(rule.id, trigger);
         next[rule.id] = { probability, on: trigger.on };
-        if (fired) onFireRef.current(rule, probability, thumbnailOf(canvas));
+        anyPending ||= pending;
+        if (fired) onFireRef.current(rule, probability, thumbnailOf(frameCanvas));
       }
       setReadings(next);
-      setStats({ detectorMs: body.ms, model: body.model });
+      setStats({ detectorMs: body.ms, model: body.model, checksPerSecond: recentStarts.length / 2 });
       setError(null);
+      return anyPending;
     };
 
-    const loop = async (): Promise<void> => {
-      const started = performance.now();
-      let wait = MIN_INTERVAL_MS;
+    /** Starts a check if one is due: the picture changed, a rule is confirming, or the idle interval passed. */
+    const poll = async (): Promise<void> => {
+      if (cancelled || checking) return;
+      const now = performance.now();
+      const sinceLast = now - lastStarted;
+      if (now < retryAfter || sinceLast < MIN_INTERVAL_MS) return;
+
+      const enabled = rulesRef.current.filter((rule) => rule.enabled);
+      // A rule that is removed or switched off starts fresh if it comes back.
+      for (const id of triggers.keys()) {
+        if (!enabled.some((rule) => rule.id === id)) triggers.delete(id);
+      }
+      const video = videoRef.current;
+      if (enabled.length === 0 || !video || video.readyState < 2 || !video.videoWidth) {
+        setReadings((previous) => (Object.keys(previous).length ? {} : previous));
+        reference = null;
+        return;
+      }
+
+      const grid = brightnessGrid(video, gridCanvas);
+      const changed = !grid || !reference || hasChanged(grid, reference);
+      if (!confirming && !changed && sinceLast < IDLE_INTERVAL_MS) return;
+
+      checking = true;
+      lastStarted = now;
+      reference = grid;
+      recentStarts = [...recentStarts.filter((started) => now - started < 2000), now];
       try {
-        await check();
+        confirming = await check(video, enabled);
       } catch (caught) {
         if (cancelled) return;
         setError(caught instanceof Error ? caught.message : String(caught));
-        wait = ERROR_BACKOFF_MS;
+        confirming = false;
+        retryAfter = performance.now() + ERROR_BACKOFF_MS;
+      } finally {
+        checking = false;
       }
-      if (!cancelled) {
-        timer = setTimeout(loop, Math.max(0, wait - (performance.now() - started)));
-      }
+      // Don't wait for the next poll: a confirming reading or a changed picture may already be due.
+      void poll();
     };
-    void loop();
+
+    const timer = setInterval(() => void poll(), MOTION_POLL_MS);
+    void poll();
 
     return () => {
       cancelled = true;
-      clearTimeout(timer);
+      clearInterval(timer);
     };
   }, [active, videoRef]);
 

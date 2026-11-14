@@ -33,3 +33,10 @@ Rules are stored per device, so the phone and the computer each keep their own l
 Rules are saved in the browser's local storage.
 
 Set `PORT` or `PHONE_PORT` to change the two ports.
+
+## Deploying
+
+The app runs on any host that supports Next.js. Settings only saves keys on a developer's own computer, so a deployed copy takes them from environment variables:
+
+- `TYPESAFE_API_KEY`, and one of `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or `GEMINI_API_KEY`.
+- `VEXO_PASSWORD`: when set, the whole site asks for this password before showing anything (`proxy.ts`). Any username works. Set it on any public deployment, because every check is paid for with the server's keys.

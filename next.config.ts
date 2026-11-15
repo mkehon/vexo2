@@ -9,7 +9,8 @@ const networkAddresses = Object.values(os.networkInterfaces())
   .map((entry) => entry!.address);
 
 const nextConfig: NextConfig = {
-  allowedDevOrigins: [...networkAddresses, "*.local"],
+  // The last entry is the public address `npm run tunnel` opens for phones that cannot reach this computer directly.
+  allowedDevOrigins: [...networkAddresses, "*.local", "*.trycloudflare.com"],
   cacheComponents: true,
   partialPrefetching: true,
   turbopack: {

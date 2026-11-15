@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { followRemote } from "../relay-client";
 import type { LocationState } from "../sensors";
 
 const PLACES_KEY = "vexo.places";
@@ -27,11 +28,41 @@ function distanceM(a: { latitude: number; longitude: number }, b: { latitude: nu
 }
 
 /**
+ * The saved places. One list for the whole page, so a place saved from one device's position
+ * (this computer's, say) can be used in a rule about another's (a phone's).
+ */
+let savedPlaces: Place[] | null = null;
+const placeListeners = new Set<() => void>();
+
+function readPlaces(): Place[] {
+  if (savedPlaces === null) {
+    try {
+      savedPlaces = JSON.parse(localStorage.getItem(PLACES_KEY) ?? "[]") as Place[];
+    } catch {
+      // Storage is unavailable or unreadable: start with no saved places.
+      savedPlaces = [];
+    }
+  }
+  return savedPlaces;
+}
+
+function writePlaces(next: Place[]): void {
+  savedPlaces = next;
+  try {
+    localStorage.setItem(PLACES_KEY, JSON.stringify(next));
+  } catch {
+    // Storage is unavailable: places last for this page view only.
+  }
+  for (const listener of placeListeners) listener();
+}
+
+/**
  * Tracks where the device is, from its own GPS or a simulator. A reading holds how far it
  * has gone from where tracking began, its speed, and how it stands relative to saved places.
  */
 export function useLocationSensor() {
-  const [source, setSource] = useState<"gps" | "simulator" | null>(null);
+  /** "remote" is another device's GPS, arriving through the relay. */
+  const [source, setSource] = useState<"gps" | "simulator" | "remote" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reading, setReading] = useState<LocationState | null>(null);
   const [places, setPlaces] = useState<Place[]>([]);
@@ -43,18 +74,8 @@ export function useLocationSensor() {
   const track = useRef<{ start: Fix | null; last: Fix | null; settled: Fix | null }>({ start: null, last: null, settled: null });
   const stopRef = useRef<(() => void) | null>(null);
 
-  // Saved places survive a refresh. Loaded after mount so server and client render the same first page.
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem(PLACES_KEY);
-      if (saved) {
-        placesRef.current = JSON.parse(saved);
-        setPlaces(placesRef.current);
-      }
-    } catch {
-      // Storage is unavailable or unreadable: start with no saved places.
-    }
-  }, []);
+  /** The latest reading another device sent, before this computer's saved places are applied to it. */
+  const remoteRef = useRef<LocationState | null>(null);
 
   const publish = useCallback(() => {
     const { start, last, settled } = track.current;
@@ -76,6 +97,36 @@ export function useLocationSensor() {
     setReading(next);
   }, []);
 
+  /**
+   * Takes a reading sent by another device, or null once it has gone quiet. Where that device
+   * stands relative to the saved places is worked out here, since the places are this page's.
+   */
+  const applyRemote = useCallback((state: LocationState | null) => {
+    remoteRef.current = state;
+    // Kept as the latest position too, so "save this spot" works on the other device's position.
+    track.current.last = state && { latitude: state.latitude, longitude: state.longitude, accuracy: state.accuracy_m, speedKmh: state.speed_kmh, at: Date.now() };
+    const places = placesRef.current.map((place) => ({ name: place.name, distance_m: state ? Math.round(distanceM(state, place)) : 0 }));
+    const here = state && { ...state, saved_places: places, currently_at: places.filter((place) => place.distance_m <= PLACE_RADIUS_M).map((place) => place.name) };
+    stateRef.current = here;
+    setReading(here);
+  }, []);
+
+  // Saved places survive a refresh, and a change made through any location source reaches this one.
+  // Loaded after mount so server and client render the same first page.
+  useEffect(() => {
+    const refresh = () => {
+      placesRef.current = readPlaces();
+      setPlaces(placesRef.current);
+      if (remoteRef.current) applyRemote(remoteRef.current);
+      else publish();
+    };
+    refresh();
+    placeListeners.add(refresh);
+    return () => {
+      placeListeners.delete(refresh);
+    };
+  }, [applyRemote, publish]);
+
   const accept = useCallback(
     (fix: Fix) => {
       const current = track.current;
@@ -94,6 +145,7 @@ export function useLocationSensor() {
     stopRef.current?.();
     stopRef.current = null;
     track.current = { start: null, last: null, settled: null };
+    remoteRef.current = null;
     stateRef.current = null;
     setReading(null);
     setOrigin(null);
@@ -167,19 +219,8 @@ export function useLocationSensor() {
     simulate(0, 0);
   }, [begin, disconnect, simulate]);
 
-  const storePlaces = useCallback(
-    (next: Place[]) => {
-      placesRef.current = next;
-      setPlaces(next);
-      try {
-        localStorage.setItem(PLACES_KEY, JSON.stringify(next));
-      } catch {
-        // Storage is unavailable: places last for this page view only.
-      }
-      publish();
-    },
-    [publish],
-  );
+  /** Replaces the saved places. Every location source on the page then republishes its reading with them. */
+  const storePlaces = useCallback((next: Place[]) => writePlaces(next), []);
 
   /** Saves the device's current position under a name. Returns false when there is no position yet. */
   const savePlace = useCallback(
@@ -209,6 +250,17 @@ export function useLocationSensor() {
     [],
   );
 
+  /** Follows another device's position, such as a phone's, from the readings it sends through the relay. */
+  const connectRemote = useCallback(
+    (channel: string) => {
+      disconnect();
+      stopRef.current = followRemote<LocationState>(channel, "location", applyRemote);
+      setSource("remote");
+      setError(null);
+    },
+    [applyRemote, disconnect],
+  );
+
   const getState = useCallback(() => stateRef.current, []);
 
   return {
@@ -219,6 +271,7 @@ export function useLocationSensor() {
     origin,
     places,
     connectGps,
+    connectRemote,
     connectSimulator,
     simulate,
     savePlace,

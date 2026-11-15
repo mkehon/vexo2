@@ -43,7 +43,8 @@ export async function POST(request: Request): Promise<Response> {
 
   // Other devices on the network run automations too, but only this computer decides who can be reached.
   const reach = getReach();
-  const local = isThisComputer(request);
+  // A hosted copy has no "this computer"; there, getting past its password is what earns the same trust.
+  const local = isThisComputer(request) || Boolean(process.env.VEXO_PASSWORD);
   if (!local && !reach.allowed?.includes(to)) {
     return Response.json(
       { error: `${what} to ${to} not placed: reach this number once from the computer running the app, then other devices can` },

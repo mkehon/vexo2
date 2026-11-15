@@ -42,6 +42,11 @@ export type Device = {
   links: DeviceLink[];
   /** One line on how to connect it, or on why it cannot be connected yet. */
   how: string;
+  /**
+   * A device with a browser of its own, such as a phone. Picked on a computer, its sensors
+   * arrive through the relay from a page opened on it; picked on the device itself, they are read directly.
+   */
+  remote?: boolean;
 };
 
 const PHONE_LINKS: DeviceLink[] = [
@@ -115,7 +120,8 @@ export const DEVICES: Device[] = [
     group: "Phones and computers",
     senses: ["camera", "sound", "location", "motion"],
     links: PHONE_LINKS,
-    how: "Open this page on the iPhone. Next to a Mac, it also works as the Mac's camera and microphone.",
+    how: "Scan the code with the iPhone and turn on the sensors to share. They stream to this computer.",
+    remote: true,
   },
   {
     id: "android",
@@ -126,7 +132,8 @@ export const DEVICES: Device[] = [
     group: "Phones and computers",
     senses: ["camera", "sound", "location", "motion"],
     links: PHONE_LINKS,
-    how: "Open this page on the phone.",
+    how: "Scan the code with the phone and turn on the sensors to share. They stream to this computer.",
+    remote: true,
   },
   {
     id: "computer",
@@ -307,13 +314,30 @@ export const DEVICES: Device[] = [
   ),
 ];
 
-export function deviceById(id: string | undefined): Device | undefined {
-  return DEVICES.find((device) => device.id === id);
+/**
+ * A device such as "a shared tab" or "a video file" can be connected several times at once.
+ * Each connection is a source of its own with its own id: the device's id for the first, then
+ * the id followed by "~2", "~3" and so on. Automations name sources by these ids.
+ */
+export function baseId(sourceId: string): string {
+  return sourceId.split("~")[0];
+}
+
+export function deviceById(id: string | undefined | null): Device | undefined {
+  return id ? DEVICES.find((device) => device.id === baseId(id)) : undefined;
 }
 
 /** What to call a device where it is listed as the source of a sense. A simulator is named after its sense, which would repeat. */
 export function sourceName(device: Device): string {
   return device.group === "Simulators" ? "Simulator" : device.name;
+}
+
+/** What to call one source, numbered when it is not the first of its device: "Any live stream 2". */
+export function sourceLabel(sourceId: string): string {
+  const device = deviceById(sourceId);
+  if (!device) return "Unknown device";
+  const number = Number(sourceId.split("~")[1]);
+  return number > 1 ? `${sourceName(device)} ${number}` : sourceName(device);
 }
 
 export type App = {

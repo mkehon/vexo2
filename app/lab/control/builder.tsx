@@ -1,13 +1,13 @@
 "use client";
 
-import { Fragment, useEffect, useRef, useState, type CSSProperties } from "react";
-import { appById, deviceById, sourceName } from "@/lib/catalog";
-import { SENSOR_ORDER, SENSORS } from "@/lib/sensors";
+import { Fragment, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { appById, deviceById, sourceLabel, type Device } from "@/lib/catalog";
+import { phraseOf, SENSOR_ORDER, SENSORS } from "@/lib/sensors";
 import { TEMPLATE_CATEGORIES, TEMPLATES, type Template } from "@/lib/templates";
 import type { SensorKind } from "@/lib/types";
-import type { Composer, DraftCondition } from "@/lib/useComposer";
+import type { ActionKind, Composer, DraftCondition } from "@/lib/useComposer";
 import type { Studio } from "@/lib/useStudio";
-import { MessageIcon, PhoneIcon, SensorIcon } from "../../ui";
+import { BellIcon, MessageIcon, PhoneIcon, SendIcon, SensorIcon, SpeakerIcon } from "../../ui";
 import { DeviceMenu } from "../device-gallery";
 import { SensorFeed } from "../feeds";
 import { BrandIcon } from "../visuals";
@@ -22,6 +22,15 @@ import { EMPTY_ART, label, Spinner, TAG } from "./shared";
 /** Apps an automation will be able to send to. Shown so people know they are on the way. */
 const COMING_SOON = ["slack", "google-calendar", "gmail"];
 const TEMPLATES_KEY = "vexo.templates";
+
+/** The actions an automation can take, as the builder names them. Any number can be on at once. */
+const ACTION_CHOICES: { kind: ActionKind; name: string; phrase: string; about: string; icon: (size: number) => ReactNode }[] = [
+  { kind: "call", name: "Call me", phrase: "call", about: "Your phone rings and a voice agent says it. You can ask it a question.", icon: (size) => <PhoneIcon size={size} /> },
+  { kind: "text", name: "Text me", phrase: "text", about: "You get a text with it and what the sensor read.", icon: (size) => <MessageIcon size={size} /> },
+  { kind: "speak", name: "Say it out loud", phrase: "say it out loud", about: "This computer says it through its speakers.", icon: (size) => <SpeakerIcon size={size} /> },
+  { kind: "alarm", name: "Sound an alarm", phrase: "sound an alarm", about: "This computer beeps for a couple of seconds.", icon: (size) => <BellIcon size={size} /> },
+  { kind: "webhook", name: "Webhook", phrase: "send a webhook", about: "Posts what happened to an address: Slack, Discord, Zapier, your own server.", icon: (size) => <SendIcon size={size} /> },
+];
 
 const field = "h-9 rounded-md border border-line bg-background px-3 text-sm outline-none focus:border-foreground";
 const word = "font-mono text-[15px] font-semibold text-[var(--fire-ink)]";
@@ -61,17 +70,21 @@ function ConditionRow(props: {
   condition: DraftCondition;
   removable: boolean;
   onOpenControls: (sense: SensorKind, slot: number) => void;
+  onPair: (device: Device) => void;
+  /** Connects a source this row names that is not connected, such as a stream whose tab was closed. */
+  onConnect: (sourceId: string, kind: SensorKind) => void;
 }) {
-  const { studio, composer, condition, removable, onOpenControls } = props;
+  const { studio, composer, condition, removable, onOpenControls, onPair, onConnect } = props;
   const { sensor } = condition;
   const slots = studio.slots[sensor];
-  // The devices this row listens to: the ones it names, or every one connected for the sensor.
-  const connected = slots.flatMap((slot) => (slot.connected && slot.deviceId ? [slot.deviceId] : []));
-  const listening = condition.devices ?? connected;
-  const feeds = slots.flatMap((slot, index) => (slot.connected && (!slot.deviceId || listening.includes(slot.deviceId) || condition.devices === null) ? [index] : []));
+  // The sources this row watches, and which slots they are live in.
+  const listening = condition.devices;
+  const feeds = slots.flatMap((slot, index) => (slot.connected && slot.deviceId && listening.includes(slot.deviceId) ? [index] : []));
   const readingId = composer.readingId(condition);
   const reading = readingId ? studio.readings[readingId] : undefined;
   const thinking = composer.isThinking(condition);
+  // Why the last device picked for this sensor did not connect, such as a share that was cancelled.
+  const problem = slots.find((slot) => !slot.connected && slot.error)?.error;
 
   return (
     <div className={`rounded-md border p-2.5 transition-colors ${reading?.on ? "border-[var(--fire)] bg-[var(--fire-soft)]" : "border-line bg-card"}`}>
@@ -107,24 +120,23 @@ function ConditionRow(props: {
               <span className={`flex h-7 items-center rounded-md border text-xs font-medium ${slot >= 0 ? "border-line bg-card" : "border-dashed border-line text-muted"}`}>
                 <button
                   type="button"
-                  onClick={() => (slot >= 0 ? onOpenControls(sensor, slot) : undefined)}
-                  title={slot >= 0 ? "Open its controls" : "Not connected"}
+                  onClick={() => (slot >= 0 ? onOpenControls(sensor, slot) : onConnect(id, sensor))}
+                  title={slot >= 0 ? "Open its controls" : "Not connected. Click to connect it again."}
                   className="flex h-full items-center gap-1.5 pl-1 pr-2"
                 >
                   {device.icon ? <BrandIcon icon={device.icon} size={18} /> : <span className={`h-1.5 w-1.5 rounded-full ${slot >= 0 ? "bg-hit" : "bg-muted/50"}`} aria-hidden />}
-                  {sourceName(device)}
+                  {sourceLabel(id)}
+                  {slot < 0 && <span className="font-mono text-[9px] uppercase text-[var(--fire-ink)]">reconnect</span>}
                 </button>
-                {listening.length > 1 && (
-                  <button
-                    type="button"
-                    onClick={() => composer.setDevices(condition.key, listening.filter((item) => item !== id))}
-                    aria-label={`Do not watch ${device.name}`}
-                    title="Leave this device out of this condition"
-                    className="flex h-full w-5 items-center justify-center border-l border-line text-muted hover:text-danger"
-                  >
-                    ×
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onClick={() => composer.setDevices(condition.key, listening.filter((item) => item !== id))}
+                  aria-label={`Do not watch ${sourceLabel(id)}`}
+                  title="Leave this device out of this condition. It stays connected."
+                  className="flex h-full w-5 items-center justify-center border-l border-line text-muted hover:text-danger"
+                >
+                  ×
+                </button>
               </span>
             </Fragment>
           );
@@ -132,10 +144,12 @@ function ConditionRow(props: {
         <DeviceMenu
           studio={studio}
           sense={sensor}
-          urgent={listening.length === 0}
+          chosen={listening}
+          onUse={(id) => composer.setDevices(condition.key, [...listening, id])}
           onPicked={(device, result) => {
-            if (condition.devices && !condition.devices.includes(device.id)) composer.setDevices(condition.key, [...condition.devices, device.id]);
+            if (!listening.includes(result.id)) composer.setDevices(condition.key, [...listening, result.id]);
             if (result.controls) onOpenControls(sensor, result.slot);
+            if (result.pair) onPair(device);
           }}
         />
 
@@ -162,18 +176,34 @@ function ConditionRow(props: {
         </span>
       </div>
 
+      {problem && (
+        <p role="alert" className="mt-2 rounded-[5px] bg-danger-soft px-2.5 py-1.5 text-xs leading-snug text-danger">
+          {problem}
+        </p>
+      )}
+
       <div className="mt-2 flex gap-2.5">
         <div className="flex shrink-0 gap-1.5">
           {(feeds.length > 0 ? feeds : [0]).map((slot) => {
             const on = readingId ? studio.readings[`${readingId}@${slot}`]?.on : false;
-            const device = deviceById(slots[slot].deviceId ?? undefined);
+            const source = slots[slot].deviceId;
             return (
               <div
                 key={slot}
                 className={`relative h-[5.5rem] overflow-hidden rounded-[5px] border ${feeds.length > 2 ? "w-28" : "w-36"} ${on ? "border-[var(--fire)] text-[var(--fire-ink)]" : "border-line"}`}
                 style={{ "--art-ground": "var(--card)" } as CSSProperties}
               >
-                <SensorFeed studio={studio} kind={sensor} slot={slot} emptyArt={EMPTY_ART[sensor]} dense caption={feeds.length > 1 && device ? sourceName(device) : undefined} />
+                <SensorFeed
+                  studio={studio}
+                  kind={sensor}
+                  slot={slot}
+                  emptyArt={EMPTY_ART[sensor]}
+                  dense
+                  // With none of this row's devices connected, the box is empty even if another device supplies the sensor.
+                  empty={feeds.length === 0}
+                  emptyLabel={listening.length > 0 ? "Not connected" : "Pick a device"}
+                  caption={feeds.length > 1 && source ? sourceLabel(source) : undefined}
+                />
               </div>
             );
           })}
@@ -210,10 +240,12 @@ export function AutomationBuilder(props: {
   composer: Composer;
   now: number;
   onOpenControls: (sense: SensorKind, slot: number) => void;
+  onPair: (device: Device) => void;
+  onConnect: (sourceId: string, kind: SensorKind) => void;
   onOpenSettings: () => void;
   onClose: () => void;
 }) {
-  const { open, studio, composer, now, onOpenControls, onOpenSettings, onClose } = props;
+  const { open, studio, composer, now, onOpenControls, onPair, onConnect, onOpenSettings, onClose } = props;
   const dialog = useRef<HTMLDialogElement>(null);
   const { conditions, join, reading } = composer;
 
@@ -242,16 +274,30 @@ export function AutomationBuilder(props: {
     if (!open && element.open) element.close();
   }, [open]);
 
+  /** Deleting takes two clicks on the same button, so one stray click cannot remove an automation. */
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
   const close = () => {
+    setConfirmDelete(false);
     composer.discard();
     onClose();
   };
 
   // Whether the chosen way of reaching a phone is set up. Unknown until the settings load.
   const reach = studio.settings?.reach;
-  const reachable = composer.action === "text" ? reach?.text : reach?.call;
+  const { actions } = composer;
+  const on = (kind: ActionKind) => actions.includes(kind);
+  // What is missing for the chosen ways of reaching a phone, if anything. Unknown until the settings load.
+  const missing = [on("call") && reach?.call === false && "Calls need an ElevenLabs key.", on("text") && reach?.text === false && "Texts need a Twilio Account SID and Auth Token."].filter(Boolean);
+  const chosen = ACTION_CHOICES.filter((choice) => on(choice.kind));
+  // What it will do, as words: "call +1 415…, say it out loud and sound an alarm".
+  const phrases = chosen.map((choice) => (choice.kind === "call" || choice.kind === "text" ? `${choice.phrase} ${composer.phone.trim() || "your phone"}` : choice.phrase));
+  const then = phrases.length > 1 ? `${phrases.slice(0, -1).join(", ")} and ${phrases.at(-1)}` : (phrases[0] ?? "");
   const justFired = now - composer.wouldHaveFiredAt < 4000;
   const written = conditions.filter((condition) => condition.text.trim());
+  // What it will be called if the name is left empty: what it watches for, as a title.
+  const phrase = written.map((condition) => phraseOf(condition.sensor, condition.text)).join(` ${join} `).replace(/^the /i, "");
+  const suggested = phrase ? phrase.charAt(0).toUpperCase() + phrase.slice(1) : "";
 
   return (
     <dialog
@@ -301,9 +347,27 @@ export function AutomationBuilder(props: {
         <div className="flex min-h-0 flex-col">
           <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-line px-5">
             <h2 id="builder-title" className="text-[15px] font-semibold">
-              New automation
+              {composer.editing ? "Edit automation" : "New automation"}
+              {composer.editing && <span className="ml-2 rounded-[4px] bg-[var(--fire-soft)] px-1.5 py-0.5 text-xs font-medium text-[var(--fire-ink)]">Saving replaces the existing one</span>}
             </h2>
             <div className="flex items-center gap-2">
+              {composer.editing && (
+                // Deleting lives here, with the rest of the editing, and asks once more before it does it.
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!confirmDelete) return setConfirmDelete(true);
+                    studio.deleteRule(composer.editing!);
+                    close();
+                  }}
+                  onBlur={() => setConfirmDelete(false)}
+                  className={`h-8 rounded-md border px-3 text-xs font-medium transition-colors ${
+                    confirmDelete ? "border-danger bg-danger text-white" : "border-line text-danger hover:border-danger hover:bg-danger-soft"
+                  }`}
+                >
+                  {confirmDelete ? "Click again to delete" : "Delete"}
+                </button>
+              )}
               {!templates && (
                 <button type="button" onClick={() => showTemplates(true)} className="h-8 rounded-md border border-line px-3 text-xs font-medium hover:bg-background">
                   Templates
@@ -316,6 +380,19 @@ export function AutomationBuilder(props: {
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4 outline-none">
+            {/* ---------- Name ---------- */}
+            <label className="mb-4 grid grid-cols-[3.25rem_minmax(0,1fr)] items-center">
+              <span className={label}>Name</span>
+              <input
+                value={composer.name}
+                onChange={(event) => composer.setName(event.target.value)}
+                placeholder={suggested ? `${suggested} (or type your own)` : "Optional. Left empty, it is named after what it watches for."}
+                maxLength={60}
+                autoComplete="off"
+                className={`${field} w-full max-w-xl font-medium`}
+              />
+            </label>
+
             {/* ---------- IF ---------- */}
             <div className="grid grid-cols-[3.25rem_minmax(0,1fr)]">
               <span className={`pt-3 ${word}`}>IF</span>
@@ -341,7 +418,7 @@ export function AutomationBuilder(props: {
                         {index === 1 && <span className="text-xs text-muted">{join === "and" ? "All of these must hold at the same time." : "Any one of these is enough."}</span>}
                       </div>
                     )}
-                    <ConditionRow studio={studio} composer={composer} condition={condition} removable={conditions.length > 1} onOpenControls={onOpenControls} />
+                    <ConditionRow studio={studio} composer={composer} condition={condition} removable={conditions.length > 1} onOpenControls={onOpenControls} onPair={onPair} onConnect={onConnect} />
                   </Fragment>
                 ))}
                 {composer.canAdd && (
@@ -364,58 +441,78 @@ export function AutomationBuilder(props: {
             <div className="mt-6 grid grid-cols-[3.25rem_minmax(0,1fr)]">
               <span className={`pt-2 ${word}`}>THEN</span>
               <div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <div role="radiogroup" aria-label="What happens" className="flex gap-1.5">
-                    {(
-                      [
-                        ["call", "Call me", <PhoneIcon key="icon" size={14} />],
-                        ["text", "Text me", <MessageIcon key="icon" size={14} />],
-                      ] as const
-                    ).map(([kind, name, icon]) => (
-                      <button
-                        key={kind}
-                        type="button"
-                        role="radio"
-                        aria-checked={composer.action === kind}
-                        onClick={() => composer.setAction(kind)}
-                        className={`flex h-9 items-center gap-2 rounded-md border pl-1.5 pr-3 text-[13px] font-semibold transition-colors ${
-                          composer.action === kind ? "border-foreground bg-background" : "border-line text-muted hover:border-muted"
-                        }`}
-                      >
-                        <span className={`flex h-6 w-6 items-center justify-center rounded-[5px] ${composer.action === kind ? "bg-hit text-white" : "bg-brand-soft"}`}>{icon}</span>
-                        {name}
-                      </button>
-                    ))}
-                  </div>
-                  <span className={label}>at</span>
-                  <input
-                    value={composer.phone}
-                    onChange={(event) => composer.setPhone(event.target.value)}
-                    aria-label="Phone number"
-                    placeholder="+1 415 555 0100"
-                    inputMode="tel"
-                    autoComplete="tel"
-                    className={`${field} w-44 font-mono`}
-                  />
-                  <span className={label}>{composer.action === "text" ? "saying" : "and say"}</span>
-                  <input
-                    value={composer.message}
-                    onChange={(event) => composer.setMessage(event.target.value)}
-                    aria-label={composer.action === "text" ? "The message" : "What the voice says"}
-                    placeholder={composer.action === "text" ? "The message to send" : "What the voice says when you pick up"}
-                    className={`${field} min-w-[14rem] flex-1`}
-                  />
+                <div role="group" aria-label="What happens" className="flex flex-wrap gap-1.5">
+                  {ACTION_CHOICES.map((choice) => (
+                    <button
+                      key={choice.kind}
+                      type="button"
+                      aria-pressed={on(choice.kind)}
+                      title={choice.about}
+                      onClick={() => composer.toggleAction(choice.kind)}
+                      className={`flex h-9 items-center gap-2 rounded-md border pl-1.5 pr-3 text-[13px] font-semibold transition-colors ${
+                        on(choice.kind) ? "border-foreground bg-background" : "border-line text-muted hover:border-muted"
+                      }`}
+                    >
+                      <span className={`flex h-6 w-6 items-center justify-center rounded-[5px] ${on(choice.kind) ? "bg-hit text-white" : "bg-brand-soft"}`}>{choice.icon(14)}</span>
+                      {choice.name}
+                    </button>
+                  ))}
                 </div>
-                <p className="mt-2 text-xs text-muted">
-                  {composer.action === "call"
-                    ? "Your phone rings and a voice agent says it, along with what the sensor read. You can ask it a question."
-                    : "You get a text with it, along with what the sensor read."}
-                  {reachable && reach?.number ? ` It comes from ${reach.number}.` : ""}
-                </p>
-                {reachable === false && (
+                <p className="mt-1.5 text-xs text-muted">Pick one or several. They all run the moment the automation fires.</p>
+
+                <div className="mt-3 flex flex-wrap items-end gap-2">
+                  {(on("call") || on("text")) && (
+                    <label className="flex flex-col gap-1">
+                      <span className={label}>Phone number</span>
+                      <input
+                        value={composer.phone}
+                        onChange={(event) => composer.setPhone(event.target.value)}
+                        aria-label="Phone number"
+                        placeholder="+1 415 555 0100"
+                        inputMode="tel"
+                        autoComplete="tel"
+                        className={`${field} w-44 font-mono`}
+                      />
+                    </label>
+                  )}
+                  {(on("call") || on("text") || on("speak")) && (
+                    <label className="flex min-w-[14rem] flex-1 flex-col gap-1">
+                      <span className={label}>What it says</span>
+                      <input
+                        value={composer.message}
+                        onChange={(event) => composer.setMessage(event.target.value)}
+                        aria-label="What it says"
+                        placeholder="The words spoken or sent"
+                        className={`${field} w-full`}
+                      />
+                    </label>
+                  )}
+                  {on("webhook") && (
+                    <label className="flex min-w-[18rem] flex-1 flex-col gap-1">
+                      <span className={label}>Webhook address</span>
+                      <input
+                        value={composer.url}
+                        onChange={(event) => composer.setUrl(event.target.value)}
+                        aria-label="Webhook address"
+                        placeholder="https://hooks.slack.com/services/…"
+                        inputMode="url"
+                        className={`${field} w-full font-mono text-[13px]`}
+                      />
+                    </label>
+                  )}
+                </div>
+
+                <ul className="mt-2.5 flex flex-col gap-0.5 text-xs text-muted">
+                  {chosen.map((choice) => (
+                    <li key={choice.kind}>
+                      <span className="font-medium text-foreground">{choice.name}:</span> {choice.about}
+                      {(choice.kind === "call" || choice.kind === "text") && reach?.[choice.kind] && reach.number ? ` It comes from ${reach.number}.` : ""}
+                    </li>
+                  ))}
+                </ul>
+                {missing.length > 0 && (
                   <p className="mt-1 flex flex-wrap items-center gap-x-2 text-xs text-[var(--fire-ink)]">
-                    {composer.action === "text" ? "Texts need a Twilio Account SID and Auth Token." : "Calls need an ElevenLabs key."} Until then a run is logged without
-                    reaching the phone.
+                    {missing.join(" ")} Until then a run is logged without reaching the phone.
                     <button type="button" onClick={onOpenSettings} className="font-semibold underline underline-offset-2">
                       Open Settings
                     </button>
@@ -453,7 +550,7 @@ export function AutomationBuilder(props: {
                       {leadOf(condition.sensor)} {condition.text.trim()}
                     </Fragment>
                   ))}
-                  , <span className="font-semibold">then</span> {composer.action} {composer.phone.trim() || "your phone"}.
+                  , <span className="font-semibold">then</span> {then}.
                 </span>
               ) : (
                 <span className="text-muted">Pick a sensor and finish its sentence{templates ? ", or start from a template" : ""}.</span>
@@ -468,12 +565,24 @@ export function AutomationBuilder(props: {
               <button type="button" onClick={close} className="h-9 rounded-md px-3 text-[13px] font-medium text-muted hover:text-foreground">
                 Cancel
               </button>
+              {composer.editing && (
+                <button
+                  type="button"
+                  disabled={written.length === 0}
+                  onClick={() => {
+                    if (composer.turnOn(true)) onClose();
+                  }}
+                  className="h-9 rounded-md border border-line px-3 text-[13px] font-semibold transition-colors hover:border-foreground disabled:opacity-35"
+                >
+                  Save as new
+                </button>
+              )}
               <button
                 type="submit"
                 disabled={written.length === 0}
                 className="h-9 rounded-md bg-foreground px-5 text-[13px] font-semibold text-background transition-opacity hover:opacity-90 disabled:opacity-35"
               >
-                Arm automation
+                {composer.editing ? "Save changes" : "Arm automation"}
               </button>
             </div>
           </div>

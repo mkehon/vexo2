@@ -18,7 +18,20 @@ function sameText(a: string, b: string): boolean {
   return difference === 0;
 }
 
+/**
+ * What a phone needs from the public address that `npm run tunnel` opens: its own page, the
+ * relay it sends readings to, and speech-to-text for its microphone. Nothing else is served
+ * there, so the address is no way into the app itself, its settings or its keys.
+ */
+const PHONE_PATHS = /^\/(phone$|api\/relay$|api\/transcribe$|_next\/|brands\/|favicon\.ico$|icon\.svg$)/;
+
 export function proxy(request: NextRequest): NextResponse {
+  // Cloudflare marks every request it forwards; requests made on this computer or its network carry neither header.
+  const tunnelled = request.headers.has("cf-connecting-ip") || request.headers.has("cdn-loop");
+  if (tunnelled && !PHONE_PATHS.test(request.nextUrl.pathname)) {
+    return new NextResponse("This address only serves the phone's sensor page.", { status: 403 });
+  }
+
   const password = process.env.VEXO_PASSWORD;
   if (!password) return NextResponse.next();
 

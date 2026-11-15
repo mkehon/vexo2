@@ -34,6 +34,7 @@ export function ago(at: number, now: number): string {
 
 export function describeAction(output: Output): string {
   if (output.kind === "speak") return `say “${output.message}”`;
+  if (output.kind === "alarm") return "sound an alarm";
   if (output.kind === "call" || output.kind === "text") return `${output.kind} ${output.to}`;
   const app = appOf(output);
   if (app) return `${["slack", "discord", "teams"].includes(app.id) ? "post to" : "send to"} ${app.name}`;

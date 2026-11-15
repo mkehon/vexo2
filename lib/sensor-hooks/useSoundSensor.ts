@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { followRemote, pairingHeaders } from "../relay-client";
 import type { SoundState } from "../sensors";
 
 /** How often the level is measured and the reading refreshed. */
@@ -112,7 +113,7 @@ export function useSoundSensor() {
         const form = new FormData();
         form.append("audio", audio);
         try {
-          const response = await fetch("/api/transcribe", { method: "POST", body: form });
+          const response = await fetch("/api/transcribe", { method: "POST", headers: pairingHeaders(), body: form });
           const body = await response.json();
           if (stopped) return;
           if (response.status === 501 || response.status === 401) {
@@ -183,7 +184,22 @@ export function useSoundSensor() {
     [],
   );
 
+  /** Listens through another device's microphone, such as a phone's, from the readings it sends through the relay. */
+  const connectRemote = useCallback(
+    (channel: string, label: string) => {
+      disconnect();
+      stopRef.current = followRemote<SoundState>(channel, "sound", (state) => {
+        stateRef.current = state;
+        setReading(state);
+      });
+      setSource({ label });
+      setError(null);
+      setSpeechNote(null);
+    },
+    [disconnect],
+  );
+
   const getState = useCallback(() => stateRef.current, []);
 
-  return { connected: source !== null, source, error, microphones, reading, speechNote, connect, disconnect, getState };
+  return { connected: source !== null, source, error, microphones, reading, speechNote, connect, connectRemote, disconnect, getState };
 }

@@ -226,6 +226,15 @@ export function SpeakerIcon({ size }: { size?: number } = {}) {
   );
 }
 
+export function BellIcon({ size }: { size?: number } = {}) {
+  return (
+    <Icon size={size}>
+      <path d="M6 9a6 6 0 0 1 12 0c0 6 2.5 7.5 2.5 7.5h-17S6 15 6 9Z" />
+      <path d="M10 20a2 2 0 0 0 4 0" />
+    </Icon>
+  );
+}
+
 export function SendIcon({ size }: { size?: number } = {}) {
   return (
     <Icon size={size}>

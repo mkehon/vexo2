@@ -4,12 +4,13 @@ import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { BRAND_NAME } from "@/lib/brand";
 import { conditionsOf, SENSOR_ORDER } from "@/lib/sensors";
-import type { SensorKind } from "@/lib/types";
+import type { Rule, SensorKind } from "@/lib/types";
 import { useComposer } from "@/lib/useComposer";
 import { firstSlot, scopeStudio, useStudio } from "@/lib/useStudio";
 import { SettingsDialog } from "../../settings-dialog";
 import { Logo } from "../../ui";
-import { DeviceGallery } from "../device-gallery";
+import { deviceById, type Device } from "@/lib/catalog";
+import { PhoneSheet } from "../phone-sheet";
 import { SensorSheet, useNow } from "../parts";
 import { AutomationBuilder } from "./builder";
 import { RuleLanes } from "./layouts";
@@ -81,7 +82,8 @@ export default function MissionControl() {
   const now = useNow(500);
   /** The sense, and which of its devices, whose controls are open. */
   const [sheet, setSheet] = useState<{ kind: SensorKind; slot: number } | null>(null);
-  const [galleryOpen, setGalleryOpen] = useState(false);
+  /** The phone being paired, while its code is showing. */
+  const [pairing, setPairing] = useState<Device | null>(null);
   const [builderOpen, setBuilderOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -93,14 +95,18 @@ export default function MissionControl() {
     const lines: CheckLine[] = [];
     for (const kind of SENSOR_ORDER) {
       if (studio.checks[kind] === counted.current[kind]) continue;
-      // The surest answer among this sense's conditions, on any of its devices.
+      // The surest answer among this sense's conditions, and the device it came from.
       const top = studio.rules
         .filter((rule) => rule.enabled)
         .flatMap((rule) =>
-          conditionsOf(rule).flatMap((condition, index) => {
-            const reading = condition.sensor === kind ? studio.readings[`${rule.id}#${index}`] : undefined;
-            return reading ? [reading] : [];
-          }),
+          conditionsOf(rule).flatMap((condition, index) =>
+            condition.sensor !== kind
+              ? []
+              : studio.slots[kind].flatMap((_, slot) => {
+                  const reading = studio.readings[`${rule.id}#${index}@${slot}`];
+                  return reading ? [{ ...reading, slot }] : [];
+                }),
+          ),
         )
         .sort((a, b) => b.probability - a.probability)[0];
       // A fast sensor would flood the log, so its lines are thinned unless the answer changed.
@@ -111,7 +117,8 @@ export default function MissionControl() {
         id: `${kind}-${studio.checks[kind]}`,
         at: Date.now(),
         kind,
-        value: studio.sensors[kind].value ?? "",
+        // What that device read, which with several devices is not always the first one's reading.
+        value: (top ? studio.slots[kind][top.slot].summary.value : studio.sensors[kind].value) ?? "",
         probability: top?.probability,
         on: top?.on,
       });
@@ -125,10 +132,22 @@ export default function MissionControl() {
   const liveCount = SENSOR_ORDER.filter((kind) => studio.sensors[kind].connected).length;
   const armed = studio.rules.filter((rule) => rule.enabled).length;
   const firing = studio.rules.filter((rule) => rule.enabled && studio.readings[rule.id]?.on).length;
-  const openSense = (kind: SensorKind, slot?: number) =>
-    studio.sensors[kind].connected ? setSheet({ kind, slot: slot ?? firstSlot(studio, kind) }) : setGalleryOpen(true);
   const openControls = (kind: SensorKind, slot: number) => setSheet({ kind, slot });
-  const shared = { studio, now, onOpenSense: openSense };
+  const openSense = (kind: SensorKind, slot?: number) => openControls(kind, slot ?? firstSlot(studio, kind));
+  /** Connects a source an automation names, such as a stream whose tab was closed. */
+  const connectSource = async (sourceId: string, kind: SensorKind) => {
+    const device = deviceById(sourceId);
+    const link = device?.links.find((item) => item.sense === kind);
+    if (!device || !link) return;
+    const result = await studio.connect(device, link, { as: sourceId });
+    if (result?.controls) openControls(result.sense, result.slot);
+    if (result?.pair) setPairing(device);
+  };
+  const edit = (rule: Rule) => {
+    composer.load(rule);
+    setBuilderOpen(true);
+  };
+  const shared = { studio, now, onOpenSense: openSense, onConnect: connectSource, onEdit: edit };
 
   return (
     <div style={THEME} className={`${sans.variable} ${mono.variable} min-h-screen bg-background text-[13px] text-foreground`}>
@@ -172,13 +191,6 @@ export default function MissionControl() {
           )}
           <button
             type="button"
-            onClick={() => setGalleryOpen(true)}
-            className="h-7 rounded-md border border-line bg-card px-2.5 text-xs font-medium transition-colors hover:bg-background"
-          >
-            Devices
-          </button>
-          <button
-            type="button"
             onClick={() => setBuilderOpen(true)}
             className="flex h-7 items-center gap-1.5 rounded-md bg-foreground px-2.5 text-xs font-semibold text-background transition-opacity hover:opacity-90"
           >
@@ -219,10 +231,12 @@ export default function MissionControl() {
         composer={composer}
         now={now}
         onOpenControls={openControls}
+        onPair={setPairing}
+        onConnect={connectSource}
         onOpenSettings={() => setSettingsOpen(true)}
         onClose={() => setBuilderOpen(false)}
       />
-      <DeviceGallery studio={studio} open={galleryOpen} onOpenControls={openControls} onClose={() => setGalleryOpen(false)} />
+      <PhoneSheet device={pairing} onClose={() => setPairing(null)} />
       <SensorSheet studio={sheet ? scopeStudio(studio, sheet.kind, sheet.slot) : studio} sensor={sheet?.kind ?? null} onClose={() => setSheet(null)} />
       <SettingsDialog open={settingsOpen} settings={studio.settings} onClose={() => setSettingsOpen(false)} onChange={studio.setSettings} />
     </div>

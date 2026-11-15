@@ -8,6 +8,8 @@ import type { ReachStatus, Settings } from "./types";
  */
 export function isThisComputer(request: Request): boolean {
   if (request.headers.has("x-vexo-remote")) return false;
+  // Through the public tunnel (scripts/tunnel.mjs) the request reaches the server from this computer, but did not start here.
+  if (request.headers.has("cf-connecting-ip") || request.headers.has("cdn-loop")) return false;
   const host = (request.headers.get("host") ?? "").replace(/:\d+$/, "");
   return host === "localhost" || host === "127.0.0.1" || host === "[::1]";
 }

@@ -185,6 +185,19 @@ function Note({ studio, kind }: { studio: Studio; kind: SensorKind }) {
 }
 
 /**
+ * One source, as small as it can be and still be read: the camera's picture as a thumbnail,
+ * or the latest reading as a few characters. For lists where several sources sit side by side.
+ */
+export function MiniFeed({ studio: whole, kind, slot }: { studio: Studio; kind: SensorKind; slot: number }) {
+  const studio = scopeStudio(whole, kind, slot);
+  if (kind === "camera") {
+    const { video } = studio.devices;
+    return <MirrorVideo source={studio.videoRef} version={`${video.source?.kind}:${video.source?.label}:${video.source?.epoch}`} className="h-full w-full object-cover" />;
+  }
+  return <span className="whitespace-nowrap px-1.5 font-mono text-[11px] font-medium tabular-nums">{studio.sensors[kind].value ?? "…"}</span>;
+}
+
+/**
  * What an automation's sense showed when it was switched off, in place of the live feed:
  * the camera's last picture, or the last reading. Fills its parent.
  */
@@ -209,8 +222,18 @@ export function PausedFeed({ kind, paused }: { kind: SensorKind; paused?: { thum
  * devices supplying the sense; without it the first connected one is shown. `caption` names
  * the device, for when several are side by side, and `dense` suits a narrow box.
  */
-export function SensorFeed(props: { studio: Studio; kind: SensorKind; emptyArt: Art; slot?: number; caption?: string; dense?: boolean }) {
-  const { studio: whole, kind, emptyArt, slot, caption, dense } = props;
+export function SensorFeed(props: {
+  studio: Studio;
+  kind: SensorKind;
+  emptyArt: Art;
+  slot?: number;
+  caption?: string;
+  dense?: boolean;
+  /** Shows the empty box even though some device is supplying the sense: the one wanted here is not connected. */
+  empty?: boolean;
+  emptyLabel?: string;
+}) {
+  const { studio: whole, kind, emptyArt, slot, caption, dense, empty, emptyLabel = "Add a device" } = props;
   const studio = scopeStudio(whole, kind, slot ?? firstSlot(whole, kind));
   const { video, sound, location, heart, glucose, motion } = studio.devices;
   const heartTrail = useTrail(heart.reading?.heart_rate_bpm ?? null);
@@ -218,11 +241,11 @@ export function SensorFeed(props: { studio: Studio; kind: SensorKind; emptyArt: 
   const motionTrail = useTrail(motion.reading?.peak_acceleration_g_last_second ?? null);
   const soundTrail = useTrail(sound.reading?.loudness_db ?? null);
 
-  if (!studio.sensors[kind].connected) {
+  if (empty || !studio.sensors[kind].connected) {
     return (
       <div className={`absolute inset-0 flex flex-col items-center justify-center gap-1 ${kind === "camera" ? "bg-[#17181A] text-white/55" : "text-muted/70"}`}>
         <DeviceArt art={emptyArt} width={80} />
-        <span className={mono}>Add a device</span>
+        <span className={`max-w-full truncate px-2 ${mono}`}>{emptyLabel}</span>
       </div>
     );
   }
@@ -230,7 +253,7 @@ export function SensorFeed(props: { studio: Studio; kind: SensorKind; emptyArt: 
   if (kind === "camera") {
     return (
       <div className="absolute inset-0 bg-[#17181A]">
-        <MirrorVideo source={studio.videoRef} version={`${video.source?.kind}:${video.source?.label}`} className="h-full w-full object-cover" />
+        <MirrorVideo source={studio.videoRef} version={`${video.source?.kind}:${video.source?.label}:${video.source?.epoch}`} className="h-full w-full object-cover" />
         {["left-2 top-2 border-l border-t", "right-2 top-2 border-r border-t", "left-2 bottom-2 border-l border-b", "right-2 bottom-2 border-r border-b"].map((corner) => (
           <span key={corner} className={`absolute h-3 w-3 border-white/80 ${corner}`} aria-hidden />
         ))}

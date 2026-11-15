@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { followRemote } from "../relay-client";
 import type { MotionState } from "../sensors";
 
 const GRAVITY = 9.80665;
@@ -38,7 +39,8 @@ function orientationOf(beta: number | null, gamma: number | null): MotionState["
  * holds a label for the movement, the device's orientation, and whether it was just dropped.
  */
 export function useMotionSensor() {
-  const [source, setSource] = useState<"device" | "simulator" | null>(null);
+  /** "remote" is another device's motion sensors, arriving through the relay. */
+  const [source, setSource] = useState<"device" | "simulator" | "remote" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reading, setReading] = useState<MotionState | null>(null);
 
@@ -205,7 +207,21 @@ export function useMotionSensor() {
     [],
   );
 
+  /** Follows how another device is moving, such as a phone, from the readings it sends through the relay. */
+  const connectRemote = useCallback(
+    (channel: string) => {
+      disconnect();
+      stopRef.current = followRemote<MotionState>(channel, "motion", (state) => {
+        stateRef.current = state;
+        setReading(state);
+      });
+      setSource("remote");
+      setError(null);
+    },
+    [disconnect],
+  );
+
   const getState = useCallback(() => stateRef.current, []);
 
-  return { connected: source !== null, source, error, reading, connectDevice, connectSimulator, simulate, disconnect, getState };
+  return { connected: source !== null, source, error, reading, connectDevice, connectRemote, connectSimulator, simulate, disconnect, getState };
 }

@@ -2,7 +2,7 @@
 
 import { appOf, type DeviceArt as Art } from "@/lib/catalog";
 import type { Output } from "@/lib/types";
-import { MessageIcon, PhoneIcon, SendIcon, SpeakerIcon } from "../ui";
+import { BellIcon, MessageIcon, PhoneIcon, SendIcon, SpeakerIcon } from "../ui";
 
 /** Pictures for the prototype screens: brand icons, device drawings and action icons. */
 
@@ -21,7 +21,7 @@ export function BrandIcon({ icon, size = 28, className = "" }: { icon: string; s
   );
 }
 
-/** The icon for what an automation does: the app it sends to, or a speaker for saying it out loud. */
+/** The icon for one thing an automation does: the app it sends to, a phone, a speaker, a bell. */
 export function ActionIcon({ output, size = 28 }: { output: Output; size?: number }) {
   const app = appOf(output);
   if (app) return <BrandIcon icon={app.icon} size={size} />;
@@ -30,7 +30,17 @@ export function ActionIcon({ output, size = 28 }: { output: Output; size?: numbe
       className="flex shrink-0 items-center justify-center bg-foreground text-background"
       style={{ width: size, height: size, borderRadius: size * 0.26 }}
     >
-      {output.kind === "speak" ? <SpeakerIcon /> : output.kind === "call" ? <PhoneIcon /> : output.kind === "text" ? <MessageIcon /> : <SendIcon />}
+      {output.kind === "speak" ? (
+        <SpeakerIcon size={size * 0.6} />
+      ) : output.kind === "alarm" ? (
+        <BellIcon size={size * 0.6} />
+      ) : output.kind === "call" ? (
+        <PhoneIcon size={size * 0.6} />
+      ) : output.kind === "text" ? (
+        <MessageIcon size={size * 0.6} />
+      ) : (
+        <SendIcon size={size * 0.6} />
+      )}
     </span>
   );
 }

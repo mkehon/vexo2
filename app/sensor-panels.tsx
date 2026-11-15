@@ -321,7 +321,7 @@ export function LocationPanel({ location }: { location: ReturnType<typeof useLoc
       )}
 
       {source && (
-        <Connected label={source === "gps" ? "This device's location" : "Simulator"} onDisconnect={location.disconnect} />
+        <Connected label={source === "gps" ? "This device's location" : source === "remote" ? "Another device's location" : "Simulator"} onDisconnect={location.disconnect} />
       )}
       {location.error && <Problem>{location.error}</Problem>}
     </>
@@ -638,7 +638,7 @@ export function MotionPanel({ motion }: { motion: ReturnType<typeof useMotionSen
       )}
 
       {source && (
-        <Connected label={source === "device" ? "This device's motion sensors" : "Simulator"} onDisconnect={motion.disconnect} />
+        <Connected label={source === "device" ? "This device's motion sensors" : source === "remote" ? "Another device's motion sensors" : "Simulator"} onDisconnect={motion.disconnect} />
       )}
       {motion.error && <Problem>{motion.error}</Problem>}
     </>

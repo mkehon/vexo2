@@ -2,15 +2,16 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BRAND_NAME } from "./brand";
-import { deviceById, sourceName, type Device, type DeviceLink } from "./catalog";
+import { baseId, sourceLabel, type Device, type DeviceLink } from "./catalog";
 import { useGlucoseSensor } from "./sensor-hooks/useGlucoseSensor";
 import { useHeartSensor } from "./sensor-hooks/useHeartSensor";
 import { useLocationSensor } from "./sensor-hooks/useLocationSensor";
 import { useMotionSensor } from "./sensor-hooks/useMotionSensor";
 import { useSoundSensor } from "./sensor-hooks/useSoundSensor";
-import { conditionId, conditionsOf, describeReading, describeWhen, SENSOR_ORDER, sensorOf, type SensorState } from "./sensors";
+import { isPhoneBrowser } from "./relay-client";
+import { conditionId, conditionsOf, describeReading, describeWhen, outputsOf, SENSOR_ORDER, sensorOf, type SensorState } from "./sensors";
 import { COOLDOWN_MS } from "./trigger";
-import type { Condition, FiredEvent, Rule, SensorKind, Settings } from "./types";
+import type { Condition, FiredEvent, Output, Rule, SensorKind, Settings } from "./types";
 import { useStateWatcher } from "./useStateWatcher";
 import { useVideoSource } from "./useVideoSource";
 import { snapshot, useWatcher, type Reading } from "./useWatcher";
@@ -63,14 +64,47 @@ function speak(message: string): boolean {
   return true;
 }
 
-async function sendWebhook(rule: Rule, probability: number, at: number, reading?: SensorState): Promise<string> {
-  if (rule.output.kind !== "webhook") return "";
+/**
+ * A few seconds of two-tone beeping. Resolves to false when this browser cannot make sound, or
+ * will not yet: browsers keep a page silent until the person has clicked or typed on it.
+ */
+let alarmAudio: AudioContext | null = null;
+function alarmContext(): AudioContext | null {
+  const Audio = window.AudioContext ?? (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!Audio) return null;
+  alarmAudio ??= new Audio();
+  return alarmAudio;
+}
+async function soundAlarm(): Promise<boolean> {
+  const audio = alarmContext();
+  if (!audio) return false;
+  await audio.resume().catch(() => {});
+  // Still held back: beeps scheduled now would all sound at once later, so none are.
+  if (audio.state !== "running") return false;
+  const start = audio.currentTime + 0.02;
+  for (let beep = 0; beep < 8; beep += 1) {
+    const at = start + beep * 0.25;
+    const tone = audio.createOscillator();
+    const volume = audio.createGain();
+    tone.type = "square";
+    tone.frequency.value = beep % 2 === 0 ? 880 : 660;
+    volume.gain.setValueAtTime(0.0001, at);
+    volume.gain.exponentialRampToValueAtTime(0.2, at + 0.02);
+    volume.gain.exponentialRampToValueAtTime(0.0001, at + 0.22);
+    tone.connect(volume).connect(audio.destination);
+    tone.start(at);
+    tone.stop(at + 0.24);
+  }
+  return true;
+}
+
+async function sendWebhook(url: string, rule: Rule, probability: number, at: number, reading?: SensorState): Promise<string> {
   try {
     const response = await fetch("/api/webhook", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        url: rule.output.url,
+        url,
         payload: {
           // Slack displays `text` and Discord displays `content`; the rest is for Zapier and custom receivers.
           text: `${BRAND_NAME}: ${describeWhen(rule)}`,
@@ -189,6 +223,8 @@ export function useStudio() {
   useEffect(() => {
     const unlock = () => {
       if ("speechSynthesis" in window) window.speechSynthesis.speak(new SpeechSynthesisUtterance(""));
+      // The same goes for the alarm's sound, on every browser.
+      void alarmContext()?.resume().catch(() => {});
     };
     window.addEventListener("pointerdown", unlock, { once: true });
     return () => window.removeEventListener("pointerdown", unlock);
@@ -201,7 +237,7 @@ export function useStudio() {
       connected: video.source !== null,
       source: video.source?.label ?? null,
       value: video.source ? (video.source.kind === "file" ? "Replay" : "Live") : null,
-      note: video.source ? { camera: "Camera", screen: "Screen or tab", file: "Video file" }[video.source.kind] : null,
+      note: video.source ? { camera: "Camera", screen: "Screen or tab", file: "Video file", remote: "Another device" }[video.source.kind] : null,
     })),
     sound: sounds.map((sound) => ({
       connected: sound.connected,
@@ -211,7 +247,7 @@ export function useStudio() {
     })),
     location: locations.map((location) => ({
       connected: location.connected,
-      source: location.source === "gps" ? "This device" : location.source === "simulator" ? "Simulator" : null,
+      source: location.source === "gps" ? "This device" : location.source === "simulator" ? "Simulator" : location.source === "remote" ? "Another device" : null,
       value: location.reading ? `${location.reading.distance_from_start_m} m` : null,
       note: location.reading
         ? location.reading.currently_at.length > 0
@@ -233,7 +269,7 @@ export function useStudio() {
     })),
     motion: motions.map((motion) => ({
       connected: motion.connected,
-      source: motion.source === "device" ? "This device" : motion.source === "simulator" ? "Simulator" : null,
+      source: motion.source === "device" ? "This device" : motion.source === "simulator" ? "Simulator" : motion.source === "remote" ? "Another device" : null,
       value: motion.reading ? motion.reading.movement : null,
       note: motion.reading ? motion.reading.orientation : null,
     })),
@@ -279,6 +315,29 @@ export function useStudio() {
     });
   }, [connectedKey]);
 
+  // Automations made before they named their devices watched whatever was connected, so a second
+  // camera would show up in all of them. Each is tied to the first device connected for its sensor.
+  useEffect(() => {
+    const firstFor = (kind: SensorKind) => {
+      const slot = connectedKey.split("|")[SENSOR_ORDER.indexOf(kind)].indexOf("1");
+      return slot >= 0 ? providers[kind][slot] : null;
+    };
+    setRules((previous) => {
+      let changed = false;
+      const next = previous.map((rule) => {
+        const own = rule.devices?.length ? null : firstFor(sensorOf(rule));
+        const more = rule.more?.map((condition) => {
+          const first = condition.devices?.length ? null : firstFor(condition.sensor);
+          return first ? { ...condition, devices: [first] } : condition;
+        });
+        if (!own && !rule.more?.some((condition, index) => more?.[index] !== condition)) return rule;
+        changed = true;
+        return { ...rule, ...(own ? { devices: [own] } : {}), ...(more ? { more } : {}) };
+      });
+      return changed ? next : previous;
+    });
+  }, [providers, connectedKey, rulesLoaded]);
+
   /** The latest reading of one slot of a sensor that sends readings, or null. */
   const stateOf = useCallback((kind: SensorKind, slot: number): SensorState | null => {
     const { sounds: s, locations: l, hearts: h, glucoses: g, motions: m } = hooks.current;
@@ -291,64 +350,111 @@ export function useStudio() {
   }, []);
 
   /**
-   * Connects one sense of a device. It keeps the slot it already has, else takes a free one,
-   * else replaces the first. Returns where it went, and whether that source has controls the
-   * person now needs (a simulator's dials, a site address); null when nothing was connected.
+   * Connects one sense of a device and returns where it went: the slot, the id of the source,
+   * whether it has controls the person now needs (a simulator's dials, a site address), and
+   * whether it is another device that has to be paired by opening a page on it. Null when
+   * nothing was connected.
+   *
+   * A device with one sensor of a kind, such as a webcam, keeps the slot it already has, so
+   * picking it again reconnects it. A shared tab or a video file is a new source every time,
+   * in a slot of its own, so two streams can run side by side. `as` connects a particular
+   * source again, by the id an automation knows it by.
    */
-  const connect = useCallback(async (device: Device, link: DeviceLink): Promise<{ sense: SensorKind; slot: number; controls: boolean } | null> => {
+  const connect = useCallback(
+    async (
+      device: Device,
+      link: DeviceLink,
+      options?: { as?: string },
+    ): Promise<{ sense: SensorKind; slot: number; id: string; controls: boolean; pair?: boolean } | null> => {
     const kind = link.sense;
-    const held = live.current.providers[kind].indexOf(device.id);
+    const holders = live.current.providers[kind];
     const flags = live.current.connected.split("|")[SENSOR_ORDER.indexOf(kind)];
-    const free = [...flags].findIndex((flag, slot) => flag === "0" && !live.current.providers[kind][slot]);
-    const slot = held >= 0 ? held : free >= 0 ? free : 0;
-    const take = () => setProviders((previous) => ({ ...previous, [kind]: previous[kind].map((id, index) => (index === slot ? device.id : id)) }));
+    const free = [...flags].findIndex((flag, index) => flag === "0" && !holders[index]);
+    const repeatable = link.via === "screen" || link.via === "file";
+    let id = options?.as ?? device.id;
+    let slot: number;
+    if (options?.as || !repeatable) {
+      const held = holders.indexOf(id);
+      slot = held >= 0 ? held : free >= 0 ? free : 0;
+    } else if (free >= 0) {
+      // A new source, numbered after the ones of this device that are already connected.
+      const numbers = holders.flatMap((holder, index) => (holder && flags[index] === "1" && baseId(holder) === device.id ? [Number(holder.split("~")[1]) || 1] : []));
+      let number = 1;
+      while (numbers.includes(number)) number += 1;
+      id = number === 1 ? device.id : `${device.id}~${number}`;
+      slot = free;
+    } else {
+      // Every slot is in use: the new share takes the place of this device's first one.
+      const own = holders.findIndex((holder) => holder !== null && baseId(holder) === device.id);
+      slot = own >= 0 ? own : 0;
+      id = own >= 0 ? holders[own]! : device.id;
+    }
+    /** What held the slot before, which is still running if the new connection never starts. */
+    const before = holders[slot];
+    const take = () => setProviders((previous) => ({ ...previous, [kind]: previous[kind].map((holder, index) => (index === slot ? id : holder)) }));
+    /** Hands the slot back when a camera did not connect, such as a share that was cancelled. */
+    const settle = (connected: boolean) => {
+      if (connected) return { sense: kind, slot, id, controls: false };
+      // A slot whose earlier source was stopped by the attempt is cleared when it reports as disconnected.
+      setProviders((previous) => ({ ...previous, [kind]: previous[kind].map((holder, index) => (index === slot && holder === id ? before : holder)) }));
+      return null;
+    };
     const { videos: v, sounds: s, locations: l, hearts: h, glucoses: g, motions: m } = hooks.current;
+
+    // A phone picked on a computer: its sensors come through the relay, from the page opened on the phone.
+    if (device.remote && !isPhoneBrowser() && (kind === "camera" || kind === "sound" || kind === "location" || kind === "motion")) {
+      take();
+      if (kind === "camera") await v[slot].connectRemote(device.id, device.name);
+      if (kind === "sound") s[slot].connectRemote(device.id, device.name);
+      if (kind === "location") l[slot].connectRemote(device.id);
+      if (kind === "motion") m[slot].connectRemote(device.id);
+      return { sense: kind, slot, id, controls: false, pair: true };
+    }
 
     switch (link.via) {
       case "camera":
         take();
-        await v[slot].connectCamera();
-        return { sense: kind, slot, controls: false };
+        return settle(await v[slot].connectCamera());
       case "screen":
         take();
-        await v[slot].connectScreen();
-        return { sense: kind, slot, controls: false };
+        return settle(await v[slot].connectScreen());
       case "file": {
         const file = await pickVideoFile();
         if (!file) return null;
         take();
-        await v[slot].connectFile(file);
-        return { sense: kind, slot, controls: false };
+        return settle(await v[slot].connectFile(file));
       }
       case "microphone":
         take();
         await s[slot].connect();
-        return { sense: kind, slot, controls: false };
+        return { sense: kind, slot, id, controls: false };
       case "gps":
         take();
         l[slot].connectGps();
-        return { sense: kind, slot, controls: false };
+        return { sense: kind, slot, id, controls: false };
       case "motion":
         take();
         await m[slot].connectDevice();
-        return { sense: kind, slot, controls: false };
+        return { sense: kind, slot, id, controls: false };
       case "bluetooth":
         take();
         await h[slot].connectBluetooth();
-        return { sense: kind, slot, controls: false };
+        return { sense: kind, slot, id, controls: false };
       case "nightscout":
         // Needs the site's address, which the glucose panel asks for.
         take();
-        return { sense: kind, slot, controls: true };
+        return { sense: kind, slot, id, controls: true };
       case "simulator":
         take();
         if (kind === "heart") h[slot].connectSimulator();
         if (kind === "glucose") g[slot].connectSimulator();
         if (kind === "motion") m[slot].connectSimulator();
         if (kind === "location") l[slot].connectSimulator();
-        return { sense: kind, slot, controls: true };
+        return { sense: kind, slot, id, controls: true };
     }
-  }, []);
+    },
+    [],
+  );
 
   const disconnect = useCallback((kind: SensorKind, slot: number) => {
     const { videos: v, sounds: s, locations: l, hearts: h, glucoses: g, motions: m } = hooks.current;
@@ -440,19 +546,18 @@ export function useStudio() {
     setFireCounts((previous) => ({ ...previous, [rule.id]: (previous[rule.id] ?? 0) + 1 }));
     setFiredAt((previous) => ({ ...previous, [rule.id]: event.at }));
 
-    if (rule.output.kind === "speak") {
-      const spoken = speak(rule.output.message);
-      record(spoken ? `Said “${rule.output.message}”` : "This browser cannot speak, so it was only logged", 0);
-      return;
-    }
+    // Every action runs at once; the log shows them all once the slowest has answered.
+    const act = async (output: Output): Promise<string> => {
+      if (output.kind === "speak") return speak(output.message) ? `Said “${output.message}”` : "This browser cannot speak";
+      if (output.kind === "alarm") return (await soundAlarm()) ? "Alarm sounded" : "Alarm not sounded: click anywhere on the page once so the browser allows sound";
+      if (output.kind === "webhook") return sendWebhook(output.url, rule, probability, event.at, state);
+      return reach(output, when, detail, kind);
+    };
+    const outputs = outputsOf(rule);
+    const waiting = outputs.filter((output) => output.kind === "call" || output.kind === "text" || output.kind === "webhook");
     const started = performance.now();
-    if (rule.output.kind === "webhook") {
-      record("Sending webhook…");
-      void sendWebhook(rule, probability, event.at, state).then((result) => record(result, Math.round(performance.now() - started)));
-      return;
-    }
-    record(rule.output.kind === "call" ? "Calling…" : "Sending text…");
-    void reach(rule.output, when, detail, kind).then((result) => record(result, Math.round(performance.now() - started)));
+    if (waiting.length > 0) record(waiting.length > 1 ? "Running…" : waiting[0].kind === "call" ? "Calling…" : waiting[0].kind === "text" ? "Sending text…" : "Sending webhook…");
+    void Promise.all(outputs.map(act)).then((results) => record(results.join(" · "), waiting.length > 0 ? Math.round(performance.now() - started) : 0));
   }, []);
 
   /**
@@ -483,8 +588,8 @@ export function useStudio() {
       const kind = conditions[index].sensor;
       // Say which device it was when this condition is watched on more than one.
       const watchedOn = new Set([...onDevices.filter((key) => key.startsWith(prefix)), unit.id]).size;
-      const source = watchedOn > 1 ? deviceById(live.current.providers[kind][slot] ?? undefined) : undefined;
-      const device = source ? sourceName(source) : undefined;
+      const source = live.current.providers[kind][slot];
+      const device = watchedOn > 1 && source ? sourceLabel(source) : undefined;
       const reading = evidence.state ? describeReading(kind, evidence.state) : "";
       const detail = [device, reading].filter(Boolean).join(": ");
 
@@ -619,6 +724,22 @@ export function useStudio() {
   rulesRef.current = rules;
 
   const addRule = useCallback((rule: Rule) => setRules((previous) => [rule, ...previous]), []);
+  /** Replaces an automation with an edited one of the same id. It stays switched on or off, and folded or not, as it was. */
+  const updateRule = useCallback(
+    (rule: Rule) =>
+      setRules((previous) => previous.map((item) => (item.id === rule.id ? { ...rule, enabled: item.enabled, paused: item.paused, collapsed: item.collapsed } : item))),
+    [],
+  );
+  /** Gives an automation a name. An empty one goes back to being named after what it watches for. */
+  const renameRule = useCallback(
+    (id: string, name: string) => setRules((previous) => previous.map((item) => (item.id === id ? { ...item, name: name.trim() || undefined } : item))),
+    [],
+  );
+  /** Folds one automation's card down to its title, or every card when no id is given. */
+  const collapseRule = useCallback(
+    (collapsed: boolean, id?: string) => setRules((previous) => previous.map((item) => (id === undefined || item.id === id ? { ...item, collapsed } : item))),
+    [],
+  );
   const deleteRule = useCallback((id: string) => setRules((previous) => previous.filter((rule) => rule.id !== id)), []);
   /** Switching one off keeps a still of what its sensors showed, which stands in for the live feed until it is back on. */
   const toggleRule = useCallback(
@@ -673,6 +794,9 @@ export function useStudio() {
     setDraft,
     draftFiredAt,
     addRule,
+    updateRule,
+    renameRule,
+    collapseRule,
     toggleRule,
     deleteRule,
     settings,

@@ -1,5 +1,7 @@
 export type Output =
   | { kind: "speak"; message: string }
+  /** A few seconds of beeping from the computer running the automation. */
+  | { kind: "alarm" }
   /** A phone call in which a voice says the message, or a text message carrying it. */
   | { kind: "call"; to: string; message: string }
   | { kind: "text"; to: string; message: string }
@@ -36,6 +38,10 @@ export type Condition = {
  */
 export type Rule = {
   id: string;
+  /** What the person calls it. Without one it is named after what it watches for (see `nameOf`). */
+  name?: string;
+  /** Whether its card is folded down to its title. */
+  collapsed?: boolean;
   /** The sensor this rule watches. Missing on rules saved before other sensors existed; those watch the camera. */
   sensor?: SensorKind;
   /** The devices the first condition is checked on. See `Condition.devices`. */
@@ -58,6 +64,8 @@ export type Rule = {
   /** What its sensors showed when it was switched off. Shown in place of the live feed until it is switched back on. */
   paused?: { thumbnail: string; detail: string };
   output: Output;
+  /** Further actions, run together with `output`. Use `outputsOf` to read them all. */
+  also?: Output[];
   enabled: boolean;
 };
 
@@ -99,7 +107,7 @@ export type Settings = {
 
 /** Whether automations can phone or text someone, and from which number. */
 export type ReachStatus = {
-  /** The number calls and texts come from, such as "+14432251356". Empty when none is chosen. */
+  /** The number calls and texts come from, such as "+14155550100". Empty when none is chosen. */
   number: string;
   /** True when everything a call needs is saved: an ElevenLabs key and a number. */
   call: boolean;
@@ -109,20 +117,6 @@ export type ReachStatus = {
 
 /** A phone number in the ElevenLabs account that calls can be placed from. */
 export type PhoneNumber = { id: string; number: string; label: string };
-
-/** A whole automation worked out from one sentence: the sensor, the check and the action. */
-export type ComposedRule = CompiledRule & {
-  sensor: SensorKind;
-  /** The condition as a phrase that reads after "When". */
-  when: string;
-  action: Output["kind"];
-  /** For "speak", "call" and "text": the sentence to say or send. */
-  message: string;
-  /** For "webhook": the service the person named, such as "Slack". May be empty. */
-  destination: string;
-  /** For "webhook": the address, when the person typed one. May be empty. */
-  url: string;
-};
 
 export type FiredEvent = {
   id: string;

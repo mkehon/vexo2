@@ -1,4 +1,4 @@
-import type { Condition, Rule, SensorKind } from "./types";
+import type { Condition, Output, Rule, SensorKind } from "./types";
 
 /**
  * The sensors a rule can watch. The camera sends frames. Every other sensor sends a small
@@ -168,6 +168,11 @@ export function conditionsOf(rule: Rule): Condition[] {
   return [first, ...(rule.more ?? [])];
 }
 
+/** Every action of an automation, the first one included. */
+export function outputsOf(rule: Rule): Output[] {
+  return [rule.output, ...(rule.also ?? [])];
+}
+
 /** The id under which one condition is checked and its reading is kept. */
 export function conditionId(ruleId: string, index: number): string {
   return `${ruleId}#${index}`;
@@ -183,6 +188,14 @@ export function describeWhen(rule: Rule): string {
   return conditionsOf(rule)
     .map((condition) => condition.when)
     .join(rule.join === "or" ? " or " : " and ");
+}
+
+/** What to call an automation: the name it was given, or else what it watches for, as a title. */
+export function nameOf(rule: Rule): string {
+  const given = rule.name?.trim();
+  if (given) return given;
+  const phrase = describeWhen(rule).replace(/^the /i, "");
+  return phrase.charAt(0).toUpperCase() + phrase.slice(1);
 }
 
 export function isSensorKind(value: unknown): value is SensorKind {

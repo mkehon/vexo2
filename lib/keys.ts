@@ -44,9 +44,13 @@ function readSaved(): Saved {
 }
 
 function writeSaved(saved: Saved): void {
-  mkdirSync(path.dirname(FILE), { recursive: true });
-  // Readable by this user only.
-  writeFileSync(FILE, JSON.stringify(saved, null, 2), { mode: 0o600 });
+  try {
+    mkdirSync(path.dirname(FILE), { recursive: true });
+    // Readable by this user only.
+    writeFileSync(FILE, JSON.stringify(saved, null, 2), { mode: 0o600 });
+  } catch {
+    // A hosted copy has nowhere to write. It takes everything from its environment, so nothing is lost.
+  }
 }
 
 export function getKey(name: KeyName): string | undefined {

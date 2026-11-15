@@ -1,5 +1,6 @@
 "use client";
 
+import { nameOf } from "@/lib/sensors";
 import type { FiredEvent, Rule } from "@/lib/types";
 import type { Studio } from "@/lib/useStudio";
 import { SensorIcon } from "../../ui";
@@ -47,7 +48,8 @@ function EventRow({ event, rule, now }: { event: FiredEvent; rule?: Rule; now: n
           <span className="text-muted">{TAG[event.sensor]}</span>
           <span className="ml-auto text-muted">{ago(event.at, now)}</span>
         </p>
-        <p className="text-[13px] font-medium leading-snug">{event.when}</p>
+        <p className="text-[13px] font-medium leading-snug">{rule ? nameOf(rule) : event.when}</p>
+        {rule?.name && <p className="text-xs leading-snug text-muted">When {event.when}</p>}
         {event.thumbnail && (
           // eslint-disable-next-line @next/next/no-img-element -- a data URL, nothing to optimize
           <img src={event.thumbnail} alt="The frame that set it off" className="mt-0.5 aspect-video w-40 rounded-[3px] bg-black object-cover" />
